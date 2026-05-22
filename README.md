@@ -1,5 +1,10 @@
 # Ghost Protocol v11.0 — Deep Recon Engine
 
+
+<img width="1918" height="980" alt="2026-05-22_13-27" src="https://github.com/user-attachments/assets/5a003fb2-2ad1-4699-9ac3-c47aa84186e2" />
+
+
+
 **Ghost Protocol** is an advanced, high-performance automated reconnaissance framework designed specifically for bug bounty hunters. It integrates industry-standard security tools into a cohesive, modular pipeline to map target attack surfaces, detect misconfigurations, and identify critical vulnerabilities.
 
 ---
