@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║         GHOST PROTOCOL v11.0 — DEEP RECON ENGINE                ║
+║         GHOST PROTOCOL v12.0 — DEEP RECON ENGINE                ║
 ║              Bug Bounty Hunter Edition                           ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  FIXED in v10.0 (over v9.0):                                    ║
@@ -27,7 +27,7 @@
 ║  NEW: Technology fingerprinting — wappalyzer-go                 ║
 ║  NEW: HTML report generator — summary.html in output dir        ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  MERGED + WIRED in v11.0 (single-file build):                   ║
+║  MERGED + WIRED in v12.0 (single-file build):                   ║
 ║  ✔ GhostConfig — env/.env se proxy, rate-limit, webhook load   ║
 ║  ✔ StealthEngine — UA rotation + proxy pool + adaptive backoff  ║
 ║  ✔ SmartNuclei — smart template selection (fast + CVE mode)     ║
@@ -42,11 +42,10 @@
 # No separate patch files needed.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from colorama import Fore, Style, init
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from dotenv import load_dotenv
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -79,6 +78,7 @@ import urllib3
 
 # ── Optional dependency — graceful fallback ─────────────────────────────────
 try:
+    from dotenv import load_dotenv  # noqa: F811 — re-import inside try for availability check
     _DOTENV_AVAILABLE = True
 except ImportError:
     _DOTENV_AVAILABLE = False
@@ -323,8 +323,9 @@ class ProxyPool:
 
     def mark_success(self, proxy: str):
         if proxy:
-            self._fails[proxy] = 0
-            self._dead_until.pop(proxy, None)
+            with self._lock:
+                self._fails[proxy] = 0
+                self._dead_until.pop(proxy, None)
 
     def mark_failure(self, proxy: str):
         if not proxy:
@@ -562,7 +563,7 @@ _PRIORITY_KEYWORDS = {
     "portal":   2, "dashboard": 2, "panel":  2, "manage":  2,
     "git":      2, "gitlab":  2, "github":  2, "bitbucket": 2,
     "jira":     2, "confluence": 2, "jenkins": 2, "ci":    2, "cd": 2,
-    "jenkins":  2, "build":   2, "deploy":  2,
+    "build":    2, "deploy":  2,
     "smtp":     2, "mail":    2, "email":   2,
     "db":       2, "database": 2, "mysql":  2, "postgres": 2, "redis": 2,
     "s3":       2, "storage": 2, "cdn":     2, "static":  3,
@@ -665,8 +666,8 @@ class SmartNuclei:
         Fast mode: focused tags, higher rate
         Deep mode:  all templates, lower rate (polite)
         """
+        import shlex as _shlex
         if self.deep:
-            # Deep scan: sab templates, slower
             skip_tags = ",".join(self.SKIP_TAGS)
             return (
                 f"nuclei -l {targets_file} "
@@ -674,17 +675,14 @@ class SmartNuclei:
                 f"-etags {skip_tags} "
                 f"-rl {self.rate_limit} "
                 f"-silent -no-color "
-                f"-o {output_file}"
+                f"-o {_shlex.quote(output_file)}"
             )
         else:
-            # Fast scan: only high-yield tags
             fast_tags = ",".join(self.FAST_IMPACT_TAGS)
             skip_tags = ",".join(self.SKIP_TAGS)
-            # Custom templates folder — apne templates auto-load
-            import os as _os
             custom_flag = (
-                f"-t {NUCLEI_CUSTOM_TEMPLATES} "
-                if _os.path.isdir(NUCLEI_CUSTOM_TEMPLATES) else ""
+                f"-t {_shlex.quote(NUCLEI_CUSTOM_TEMPLATES)} "
+                if os.path.isdir(NUCLEI_CUSTOM_TEMPLATES) else ""
             )
             return (
                 f"nuclei -l {targets_file} "
@@ -694,7 +692,7 @@ class SmartNuclei:
                 f"{custom_flag}"
                 f"-rl {self.rate_limit} "
                 f"-silent -no-color "
-                f"-o {output_file}"
+                f"-o {_shlex.quote(output_file)}"
             )
 
     def build_cve_cmd(self, targets_file: str, output_file: str) -> str:
@@ -702,13 +700,14 @@ class SmartNuclei:
         Recent critical CVEs ke liye targeted scan.
         Fast + high-value.
         """
+        import shlex as _shlex
         template_ids = ",".join(self.PRIORITY_CVE_TEMPLATES)
         return (
             f"nuclei -l {targets_file} "
             f"-id {template_ids} "
             f"-rl {self.rate_limit} "
             f"-silent -no-color "
-            f"-o {output_file}"
+            f"-o {_shlex.quote(output_file)}"
         )
 
 
@@ -970,7 +969,7 @@ OPTIONAL_TOOLS = [
     "amass", "waybackurls", "subjs", "corsy", "subzy",
     "puredns", "shuffledns", "alterx", "ffuf", "massdns",
     "gowitness", "paramspider", "wappalyzergo", "cloud_enum",
-    "asnmap",
+    "asnmap", "trufflehog",
 ]
 
 INTERESTING_PORTS = {
@@ -1088,13 +1087,16 @@ class DeepRecon:
                  dry_run: bool = False, phases: list = None,
                  skip_nuclei_update: bool = False,
                  output_dir: str = "",
-                 force: bool = False):
+                 force: bool = False,
+                 passive: bool = False):
         self.targets      = self._load_targets(target_file)
         self.session_id   = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         self.base_dir     = os.path.abspath(output_dir) if output_dir else f"DEEP_RECON_{self.session_id}"
         self.dry_run      = dry_run
         self.phases       = phases or list(PHASE_MARKERS.keys())
-        self._passive_mode = "recursive" not in self.phases and "probe" not in self.phases
+        # FIX v12: explicit --passive flag, not inferred from phases list.
+        # Agar koi --phases enum,cloud,github kare toh passive nahi hona chahiye.
+        self._passive_mode = passive
         self.scope        = ScopeValidator(scope_file)
         self.skip_nupdate = skip_nuclei_update
         self.force        = force
@@ -1168,7 +1170,8 @@ class DeepRecon:
     def _detect_resolvers(self) -> str:
         # 1. Pehle check karo — file already hai
         if os.path.exists(RESOLVERS_FILE) and os.path.getsize(RESOLVERS_FILE) > 100:
-            count = sum(1 for _ in open(RESOLVERS_FILE))
+            with open(RESOLVERS_FILE, encoding="utf-8", errors="replace") as fh:
+                count = sum(1 for _ in fh)
             self.logger.info(f"Resolvers: {RESOLVERS_FILE} ({count} entries)")
             return RESOLVERS_FILE
 
@@ -1181,8 +1184,9 @@ class DeepRecon:
         ]
         for url in RESOLVER_URLS:
             try:
-                r = requests.get(url, timeout=30)
-                if r.status_code == 200 and len(r.text) > 500:
+                # FIX v12: self._http — consistent stealth across all HTTP calls
+                r = self._http.get(url, timeout=30)
+                if r is not None and r.status_code == 200 and len(r.text) > 500:
                     with open(RESOLVERS_FILE, "w") as f:
                         f.write(r.text)
                     count = r.text.strip().count("\n") + 1
@@ -1307,14 +1311,25 @@ class DeepRecon:
     def notify_discord(self, message: str):
         if not DISCORD_WEBHOOK_URL:
             return
-        try:
-            requests.post(
-                DISCORD_WEBHOOK_URL,
-                json={"content": f"🚨 **GHOST PROTOCOL ALERT**\n```{message}```"},
-                timeout=10
-            )
-        except Exception as e:
-            self.logger.warning(f"Discord notify failed: {e}")
+        # Use self._http — retry + proxy + UA rotation
+        for attempt in range(3):
+            try:
+                r = self._http.post(
+                    DISCORD_WEBHOOK_URL,
+                    json={"content": f"🚨 **GHOST PROTOCOL ALERT**\n```{message}```"},
+                    timeout=10,
+                )
+                if r and r.status_code in (200, 204):
+                    return
+                if r and r.status_code == 429:
+                    retry_after = int(r.headers.get("Retry-After", 5))
+                    time.sleep(retry_after)
+                    continue
+                # Non-429, non-success — break out, no point retrying
+                break
+            except Exception as e:
+                self.logger.warning(f"Discord notify attempt {attempt+1} failed: {e}")
+                time.sleep(2)
 
     def _phase_done_marker(self, d_dir: str, phase: str) -> str:
         return os.path.join(d_dir, PHASE_MARKERS.get(phase, f".{phase}_done"))
@@ -1720,8 +1735,8 @@ class DeepRecon:
 
         # ── 2a. Port Scanning ────────────────────────────────────────────────
         self.run_cmd(
-            f"naabu -l {resolved} -p {NAABU_PORTS} -silent "
-            f"-t {THREADS_NAABU} -o {port_file}",
+            f"naabu -l {self._q(resolved)} -p {NAABU_PORTS} -silent "
+            f"-t {THREADS_NAABU} -o {self._q(port_file)}",
             "Port scanning (naabu)"
         )
         total_open = self.count_lines(port_file)
@@ -1851,7 +1866,7 @@ class DeepRecon:
         # ── 2g. Technology Fingerprinting ────────────────────────────────────
         if self.available.get("wappalyzergo") and self.file_has_content(live_200):
             self.run_cmd(
-                f"wappalyzergo -f {live_200} -o {d_dir}/evidence/technologies.json 2>/dev/null",
+                f"wappalyzergo -f {self._q(live_200)} -o {self._q(d_dir + '/evidence/technologies.json')} 2>/dev/null",
                 "Technology fingerprinting"
             )
 
@@ -1895,9 +1910,9 @@ class DeepRecon:
             tmp_out = self._tmpfile(f"vhost_{hashlib.md5(target.encode()).hexdigest()[:8]}.json")
             self.run_cmd(
                 f"ffuf -u {target} -H 'Host: FUZZ.{domain}' "
-                f"-w {wl} -mc 200,301,302,403 "
+                f"-w {self._q(wl)} -mc 200,301,302,403 "
                 f"-fs 0 -t 50 -s "
-                f"-o {tmp_out} -of json 2>/dev/null",
+                f"-o {self._q(tmp_out)} -of json 2>/dev/null",
             )
             if self.file_has_content(tmp_out):
                 try:
@@ -1917,7 +1932,7 @@ class DeepRecon:
             print(f"{Fore.RED}      🏠 VHOSTS: {found_total}")
             self.notify_discord(f"[{domain}] {found_total} virtual hosts!")
         else:
-            print(f"      VHosts: none found")
+            print("      VHosts: none found")
 
     # ── PHASE 3: HISTORICAL URLS ───────────────────────────────────────────────
     def phase3_historical_urls(self, domain: str, d_dir: str) -> str:
@@ -1930,7 +1945,7 @@ class DeepRecon:
         hist_file = f"{d_dir}/historical_urls.txt"
 
         self.run_cmd(
-            f"gau {domain} --mc 200,301,302 --threads 5 -o {hist_file}",
+            f"gau {self._q(domain)} --mc 200,301,302 --threads 5 -o {self._q(hist_file)}",
             "GAU"
         )
         if self.available.get("waybackurls"):
@@ -1985,7 +2000,7 @@ class DeepRecon:
 
         # Katana crawl
         self.run_cmd(
-            f"katana -list {live_200} -jc -d {KATANA_DEPTH} -kf all -silent -o {endpoints}",
+            f"katana -list {self._q(live_200)} -jc -d {KATANA_DEPTH} -kf all -silent -o {self._q(endpoints)}",
             f"Katana (depth={KATANA_DEPTH})"
         )
 
@@ -1998,34 +2013,23 @@ class DeepRecon:
         # FIX: gowitness v3 API — old --disable-db flag removed
         if self.available.get("gowitness"):
             gowitness_cmd = (
-                f"gowitness scan file -f {live_200} "
+                f"gowitness scan file -f {self._q(live_200)} "
                 f"--threads {THREADS_GOWITNESS} "
-                f"--screenshot-path {evidence}/screenshots"
+                f"--screenshot-path {self._q(evidence + '/screenshots')}"
             )
             # Fallback for older gowitness
             result = self.run_cmd_list(["gowitness", "--version"])
             if result and "v2" in result.lower():
                 gowitness_cmd = (
-                    f"gowitness file -f {live_200} "
+                    f"gowitness file -f {self._q(live_200)} "
                     f"--threads {THREADS_GOWITNESS} "
-                    f"--screenshot-path {evidence}/screenshots --disable-db"
+                    f"--screenshot-path {self._q(evidence + '/screenshots')} --disable-db"
                 )
             self.run_cmd(gowitness_cmd, "Screenshots (gowitness)")
 
-        # Subdomain Takeover
-        if self.available.get("subzy"):
-            resolved_path = self._get_resolved_path(d_dir)
-            self.run_cmd(
-                f"subzy run --targets {resolved_path} --hide-fails "
-                f"--output {evidence}/takeover.txt",
-                "Subdomain Takeover (subzy)"
-            )
-            tc = self.count_lines(f"{evidence}/takeover.txt")
-            if tc > 0:
-                print(f"{Fore.RED}      💀 TAKEOVER: {tc}")
-                self.notify_discord(f"[{domain}] {tc} takeover candidates!")
-        else:
-            print(f"{Fore.YELLOW}      [~] subzy not found — takeover skip.")
+        # FIX v12: subzy Phase 4 se remove — Phase 9 dedicated takeover phase hai
+        # Duplicate work tha aur alag output files mein save hota tha (takeover.txt vs takeover_candidates.txt)
+        # Phase 9 mein subzy properly run hota hai with correct output path
 
         # Param Discovery
         if PARAM_DISCOVERY and self.available.get("paramspider") and self.file_has_content(live_200):
@@ -2040,7 +2044,7 @@ class DeepRecon:
         print(f"{Fore.CYAN}  [*] Param discovery (paramspider)...")
         param_out = f"{d_dir}/evidence/params.txt"
         self.run_cmd(
-            f"paramspider -d {domain} --quiet -o {param_out} 2>/dev/null",
+            f"paramspider -d {self._q(domain)} --quiet -o {self._q(param_out)} 2>/dev/null",
             timeout=300
         )
         if self.file_has_content(param_out):
@@ -2080,7 +2084,7 @@ class DeepRecon:
         for u in urls:
             try:
                 r = self._http.get(u, timeout=10, verify=False, allow_redirects=True)
-                if r.status_code >= 400:
+                if r is None or r.status_code >= 400:
                     continue
                 body = r.text[:1_000_000]
                 for m in regex.finditer(body):
@@ -2090,15 +2094,119 @@ class DeepRecon:
                 continue
         self._write_unique_sorted_lines(out_file, sorted(findings))
 
+    def _run_trufflehog(self, scan_dir: str, out_file: str, label: str = "") -> int:
+        """
+        TruffleHog v3 — filesystem scan on a directory of JS/text files.
+
+        TruffleHog v3 install:
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+          OR: go install github.com/trufflesecurity/trufflehog/v3@latest
+
+        Returns: number of verified/unverified secrets found.
+        """
+        if not self.available.get("trufflehog"):
+            return 0
+        if not os.path.isdir(scan_dir):
+            return 0
+
+        th_raw = self._tmpfile(f"trufflehog_{os.path.basename(scan_dir)}.jsonl")
+
+        # TruffleHog v3 filesystem scan
+        # --only-verified  : sirf confirmed secrets (low FP) — comment out agar aur chahiye
+        # --json           : machine-readable JSONL output
+        # --no-update      : startup mein update skip karo (faster)
+        cmd = (
+            f"trufflehog filesystem {self._q(scan_dir)} "
+            f"--json --no-update "
+            f"2>/dev/null > {self._q(th_raw)}"
+        )
+        self.run_cmd(cmd, f"TruffleHog scan{' (' + label + ')' if label else ''}", timeout=300)
+
+        # Parse JSONL output
+        findings = []
+        verified_count   = 0
+        unverified_count = 0
+
+        if self.file_has_content(th_raw):
+            with open(th_raw, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    detector  = obj.get("DetectorName", "Unknown")
+                    verified  = obj.get("Verified", False)
+                    raw_val   = obj.get("Raw", "") or obj.get("RawV2", "")
+                    redacted  = obj.get("Redacted", "")
+
+                    # Source file path extract karo
+                    src_meta = obj.get("SourceMetadata", {})
+                    file_path = ""
+                    for src_type in ["Filesystem", "Github", "URL"]:
+                        data = src_meta.get("Data", {}).get(src_type, {})
+                        file_path = (
+                            data.get("file") or data.get("link") or
+                            data.get("repository") or ""
+                        )
+                        if file_path:
+                            break
+
+                    # Display value — redacted agar available, warna raw truncated
+                    display_val = redacted if redacted else (raw_val[:60] + "..." if len(raw_val) > 60 else raw_val)
+                    verified_str = f"{Fore.RED}[VERIFIED]" if verified else f"{Fore.YELLOW}[unverified]"
+                    short_path   = os.path.basename(file_path) if file_path else "?"
+
+                    entry = {
+                        "detector":  detector,
+                        "verified":  verified,
+                        "value":     display_val,
+                        "file":      file_path,
+                        "raw":       raw_val[:200],
+                    }
+                    findings.append(entry)
+
+                    if verified:
+                        verified_count += 1
+                    else:
+                        unverified_count += 1
+
+                    print(
+                        f"      {verified_str} {Fore.WHITE}{detector}"
+                        f"{Fore.CYAN}  [{short_path}]"
+                        f"  {Fore.WHITE}{display_val[:50]}"
+                    )
+
+        if findings:
+            # Save human-readable + JSON
+            txt_lines = []
+            for idx, f in enumerate(findings, 1):
+                v_tag = "*** VERIFIED ***" if f["verified"] else "unverified"
+                txt_lines.append(
+                    f"[{idx}] {v_tag} | {f['detector']} | {f['file']}\n"
+                    f"      Value: {f['value']}\n"
+                )
+            self._write_unique_sorted_lines(out_file, txt_lines)
+
+            json_out = out_file.replace(".txt", ".json")
+            with open(json_out, "w") as jf:
+                json.dump({
+                    "total":      len(findings),
+                    "verified":   verified_count,
+                    "unverified": unverified_count,
+                    "findings":   findings,
+                }, jf, indent=2)
+
+        return len(findings)
+
     # ── PHASE 5: JS SECRET HUNTING ─────────────────────────────────────────────
     def phase5_js_secrets(self, domain: str, d_dir: str, live_200: str):
         if not self._phase_enabled("js"):
             return
         if not self.force and self._phase_is_done(d_dir, "js"):
-            return
-
-        if not self.available.get("subjs"):
-            print(f"{Fore.YELLOW}      [~] subjs not found — JS analysis skip.")
             return
         if not self.file_has_content(live_200):
             print(f"{Fore.YELLOW}      [~] No live_200 input — JS analysis skip.")
@@ -2108,17 +2216,91 @@ class DeepRecon:
         evidence = f"{d_dir}/evidence"
         js_urls  = f"{d_dir}/js_urls.txt"
 
-        self._extract_subjs_urls(live_200, js_urls)
+        # FIX v12: subjs nahi hai toh Python fallback use karo — phase skip nahi karo
+        if self.available.get("subjs"):
+            self._extract_subjs_urls(live_200, js_urls)
+        else:
+            print(f"{Fore.YELLOW}      [~] subjs not found — katana JS extraction use kar rahe hain")
+            # katana JS link extraction fallback
+            self.run_cmd(
+                f"katana -list {self._q(live_200)} -jc -d 2 -kf all -silent "
+                f"-ef css,font,woff,woff2,png,jpg,gif,svg,ico "
+                f"| grep '\\.js' > {self._q(js_urls)} 2>/dev/null",
+                allow_exit_codes=(0, 1)
+            )
+            if not self.file_has_content(js_urls):
+                # Last fallback: httpx pe grep karo JS links ke liye
+                self.run_cmd(
+                    f"httpx -l {self._q(live_200)} -silent -match-regex '\\.js([?#]|$)' "
+                    f"-o {self._q(js_urls)} 2>/dev/null",
+                    allow_exit_codes=(0, 1)
+                )
+
         js_count = self.count_lines(js_urls)
         print(f"      JS files: {Fore.GREEN}{js_count}")
 
         if self.file_has_content(js_urls):
+            # Save copy for phase11 (js_diff) — evidence/js_files.txt
+            shutil.copy2(js_urls, f"{evidence}/js_files.txt")
+
+            # ── Step A: Python regex-based hunt ──────────────────────────
             secrets_file = f"{evidence}/js_secrets.txt"
             self._hunt_js_secrets_python(js_urls, secrets_file)
-            sc = self.count_lines(secrets_file)
-            if sc > 0:
-                print(f"{Fore.RED}      🔑 SECRETS: {sc}")
-                self.notify_discord(f"[{domain}] {sc} potential secrets in JS!")
+            regex_sc = self.count_lines(secrets_file)
+
+            # ── Step B: TruffleHog scan (700+ detectors, verified secrets)
+            th_findings = 0
+            if self.available.get("trufflehog"):
+                # JS files ko locally download karo — trufflehog filesystem scan ke liye
+                js_download_dir = self._tmpfile(f"js_dl_{domain}")
+                os.makedirs(js_download_dir, exist_ok=True)
+                print(f"{Fore.CYAN}  [*] Downloading JS files for TruffleHog scan...")
+
+                downloaded = 0
+                with open(js_urls, encoding="utf-8", errors="replace") as f:
+                    urls_to_dl = [l.strip() for l in f if l.strip()][:150]
+
+                def _dl_js(url):
+                    try:
+                        r = self._http.get(url, timeout=10, allow_redirects=True)
+                        if r and r.status_code == 200 and len(r.text) > 50:
+                            # URL se safe filename banao
+                            fname = re.sub(r'[^a-zA-Z0-9_.-]', '_', url)[-120:] + ".js"
+                            fpath = os.path.join(js_download_dir, fname)
+                            with open(fpath, "w", encoding="utf-8", errors="replace") as fout:
+                                fout.write(r.text)
+                            return True
+                    except Exception:
+                        pass
+                    return False
+
+                with ThreadPoolExecutor(max_workers=20) as ex:
+                    results = list(ex.map(_dl_js, urls_to_dl))
+                downloaded = sum(results)
+                print(f"      Downloaded: {Fore.GREEN}{downloaded} JS files")
+
+                if downloaded > 0:
+                    th_out = f"{evidence}/trufflehog_js.txt"
+                    th_findings = self._run_trufflehog(
+                        js_download_dir, th_out, label="live JS"
+                    )
+                    # Cleanup downloaded JS files (can be large)
+                    shutil.rmtree(js_download_dir, ignore_errors=True)
+            else:
+                print(f"{Fore.YELLOW}      [~] trufflehog not found — install: "
+                      f"curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin")
+
+            # ── Combined results ──────────────────────────────────────────
+            total_sc = regex_sc + th_findings
+            if total_sc > 0:
+                print(f"{Fore.RED}      🔑 SECRETS: {total_sc} "
+                      f"(regex: {regex_sc}, trufflehog: {th_findings})")
+                self.notify_discord(
+                    f"[{domain}] 🔑 {total_sc} secrets in JS! "
+                    f"(regex:{regex_sc}, trufflehog:{th_findings})"
+                )
+            else:
+                print("      JS Secrets: none found")
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "js")
@@ -2154,16 +2336,16 @@ class DeepRecon:
         # CORS check
         if self.available.get("corsy"):
             self.run_cmd(
-                f"corsy -i {live_200} -t 10 --headers 'User-Agent: Mozilla' "
-                f"-o {evidence}/cors.txt 2>/dev/null",
+                f"corsy -i {self._q(live_200)} -t 10 --headers 'User-Agent: Mozilla' "
+                f"-o {self._q(evidence + '/cors.txt')} 2>/dev/null",
                 "CORS check (corsy)"
             )
         else:
-            # FIX: use passed live_200 param, not hardcoded path
+            # FIX v12: -match-regex deprecated → -mr (newer httpx versions)
             self.run_cmd(
                 f"httpx -l {self._q(live_200)} -silent "
                 f"-H 'Origin: https://evil.com' "
-                f"-match-regex 'Access-Control-Allow-Origin: https://evil.com' "
+                f"-mr 'Access-Control-Allow-Origin: https://evil.com' "
                 f"-o {self._q(evidence + '/cors.txt')} 2>/dev/null",
                 "Basic CORS check (httpx)"
             )
@@ -2185,59 +2367,6 @@ class DeepRecon:
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "mine")
-
-    def _run_403_bypass(self, targets_file: str, out_file: str):
-        """
-        FIX: Python-based 403 bypass — proper header handling, no bash quoting bugs.
-        """
-        bypass_headers = [
-            {"X-Original-URL": "/"},
-            {"X-Forwarded-For": "127.0.0.1"},
-            {"X-Custom-IP-Authorization": "127.0.0.1"},
-            {"X-Rewrite-URL": "/"},
-            {"X-Real-IP": "127.0.0.1"},
-            {"X-Host": "localhost"},
-            {"X-Originating-IP": "127.0.0.1"},
-        ]
-        bypass_paths = [
-            "/%2f/", "/./", "//", "/%252f/", "/..;/",
-        ]
-
-        urls = []
-        with open(targets_file) as f:
-            urls = [l.strip() for l in f if l.strip()]
-
-        bypassed = []
-
-        for url in urls[:50]:  # Max 50 targets
-            for headers in bypass_headers:
-                try:
-                    r = self._http.get(url, headers=headers, timeout=8,
-                                    allow_redirects=False)
-                    if r.status_code == 200:
-                        hname = list(headers.keys())[0]
-                        entry = f"BYPASS [{hname}]: {url}"
-                        bypassed.append(entry)
-                        print(f"      {Fore.RED}{entry}")
-                        break
-                except Exception:
-                    continue
-
-            # Path-based bypass
-            for suffix in bypass_paths:
-                try:
-                    test_url = url.rstrip("/") + suffix
-                    r = self._http.get(test_url, timeout=8, allow_redirects=False)
-                    if r.status_code == 200:
-                        entry = f"BYPASS [path:{suffix}]: {url}"
-                        bypassed.append(entry)
-                        break
-                except Exception:
-                    continue
-
-        if bypassed:
-            with open(out_file, "w") as f:
-                f.write("\n".join(bypassed) + "\n")
 
     # ── PHASE 7: CLOUD ASSET ENUM ─────────────────────────────────────────────
     def phase7_cloud_enum(self, domain: str, d_dir: str):
@@ -2298,7 +2427,7 @@ class DeepRecon:
             print(f"      Cloud assets found: {Fore.RED}{len(found_buckets)}")
             self.notify_discord(f"[{domain}] {len(found_buckets)} cloud assets!")
         else:
-            print(f"      Cloud assets: none found")
+            print("      Cloud assets: none found")
 
         # cloud_enum tool (if available)
         if self.available.get("cloud_enum"):
@@ -2416,14 +2545,20 @@ class DeepRecon:
                 time.sleep(2.5 + random.uniform(0.3, 1.0))
 
             try:
-                resp = requests.get(
+                # FIX v12: self._http — UA rotation + proxy pool + adaptive backoff
+                # Pehle raw requests.get tha — stealth completely bypass ho raha tha
+                resp = self._http.get(
                     "https://api.github.com/search/code",
                     headers=headers,
                     params={"q": dork, "per_page": 30},
                     timeout=20,
                 )
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 self.logger.warning(f"GitHub search error [{dork[:40]}]: {e}")
+                continue
+
+            if resp is None:
+                self.logger.warning(f"GitHub search: no response for dork [{dork[:40]}]")
                 continue
 
             if resp.status_code == 401:
@@ -2478,10 +2613,11 @@ class DeepRecon:
                 matched_secrets = []
                 try:
                     time.sleep(random.uniform(0.3, 0.8))
-                    raw_resp = requests.get(
+                    # FIX v12: self._http — proxy + UA rotation
+                    raw_resp = self._http.get(
                         raw_url, headers=headers, timeout=12
                     )
-                    if raw_resp.status_code == 200:
+                    if raw_resp is not None and raw_resp.status_code == 200:
                         content = raw_resp.text[:50_000]   # 50KB cap
                         for pattern, pname in compiled_patterns:
                             matches = pattern.findall(content)
@@ -2521,7 +2657,7 @@ class DeepRecon:
                     f.write(f"     URL:   {find['url']}\n")
                     f.write(f"     Dork:  {find['dork']}\n")
                     if find["secrets"]:
-                        f.write(f"     *** SECRETS FOUND ***\n")
+                        f.write("     *** SECRETS FOUND ***\n")
                         for s in find["secrets"]:
                             f.write(f"       - {s}\n")
                     f.write("\n")
@@ -2547,7 +2683,7 @@ class DeepRecon:
                     f"Check {out_file}"
                 )
         else:
-            print(f"      GitHub: koi findings nahi")
+            print("      GitHub: koi findings nahi")
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "github")
@@ -2697,7 +2833,7 @@ class DeepRecon:
             return
         if not self.available.get("asnmap"):
             print(f"{Fore.YELLOW}  [~] Phase 10 skip — asnmap nahi mila")
-            print(f"      Install: go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest")
+            print("      Install: go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest")
             return
 
         t0 = self.phase_timer("PHASE 10: ASN / IP RANGE ENUM")
@@ -2712,16 +2848,31 @@ class DeepRecon:
         count = self.count_lines(out_file)
         print(f"      IP ranges found: {Fore.GREEN}{count}")
 
-        # Agar ranges mili toh httpx se quick probe — live IPs dhundo
+        # FIX v12: naabu port scan pehle, phir httpx probe — sirf httpx se bohot kuch miss ho jaata tha
         if count > 0 and count <= 50:   # bahut bade ranges skip karo
-            ip_live = f"{evidence}/asn_live_hosts.txt"
+            ip_ports_file = f"{evidence}/asn_open_ports.txt"
+            ip_live       = f"{evidence}/asn_live_hosts.txt"
+
+            # Step 1: naabu — IP ranges mein open ports dhundo
             self.run_cmd(
-                f"httpx -l {self._q(out_file)} -silent -t 50 -sc "
-                f"-follow-redirects -o {self._q(ip_live)}",
-                "ASN live host probe"
+                f"naabu -l {self._q(out_file)} -p {NAABU_PORTS} "
+                f"-silent -t {THREADS_NAABU} -o {self._q(ip_ports_file)}",
+                "ASN port scan (naabu)"
+            )
+            asn_ports = self.count_lines(ip_ports_file)
+            print(f"      ASN open ports: {Fore.GREEN}{asn_ports}")
+
+            # Step 2: httpx probe — live + fingerprint
+            input_for_httpx = ip_ports_file if self.file_has_content(ip_ports_file) else out_file
+            self.run_cmd(
+                f"httpx -l {self._q(input_for_httpx)} -silent -t 50 -sc "
+                f"-title -web-server -follow-redirects -o {self._q(ip_live)}",
+                "ASN live host probe (httpx)"
             )
             ip_count = self.count_lines(ip_live)
             print(f"      Live IPs (ASN): {Fore.GREEN}{ip_count}")
+            if ip_count > 0:
+                self.notify_discord(f"[{domain}] ASN: {ip_count} live IPs from IP ranges!")
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "asn")
@@ -2747,8 +2898,8 @@ class DeepRecon:
         # Step 1: Wayback se JS URLs nikalo
         print(f"{Fore.CYAN}  [*] Wayback JS URLs fetching...")
         try:
-            # CDX API — mimetype filter se sirf JS files, last 5 years
-            r = requests.get(
+            # FIX v12: self._http — stealth fetch
+            r = self._http.get(
                 "https://web.archive.org/cdx/search/cdx",
                 params={
                     "url":        f"*.{domain}/*.js",
@@ -2761,15 +2912,14 @@ class DeepRecon:
                 },
                 timeout=30,
             )
-            if r.status_code == 200 and r.text.strip():
-                # format: url timestamp — sirf URL lo
+            if r and r.status_code == 200 and r.text.strip():
                 raw_lines = r.text.strip().splitlines()
                 wayback_urls = list(set(
                     line.split()[0] for line in raw_lines if line.strip()
                 ))
             else:
-                # Fallback — bina mimetype filter ke try karo
-                r2 = requests.get(
+                # Fallback — bina mimetype filter ke
+                r2 = self._http.get(
                     "https://web.archive.org/cdx/search/cdx",
                     params={
                         "url":      f"*.{domain}/*.js",
@@ -2781,7 +2931,11 @@ class DeepRecon:
                     },
                     timeout=30,
                 )
-                wayback_urls = list(set(r2.text.strip().splitlines())) if r2.status_code == 200 and r2.text.strip() else []
+                wayback_urls = (
+                    list(set(r2.text.strip().splitlines()))
+                    if r2 and r2.status_code == 200 and r2.text.strip()
+                    else []
+                )
         except Exception as e:
             self.logger.warning(f"Wayback JS fetch error: {e}")
             wayback_urls = []
@@ -2792,9 +2946,12 @@ class DeepRecon:
             self._mark_phase_done(d_dir, "jsdiff")
             return
 
-        # Step 2: Current live JS files nikalo (phase5 ka output reuse)
-        current_js_file = f"{d_dir}/evidence/js_files.txt"
-        current_urls    = []
+        # Step 2: Current live JS files nikalo
+        # FIX v12: phase5 js_urls.txt path — evidence/js_files.txt bhi check karo (Phase5 copies both)
+        current_js_file = f"{d_dir}/js_urls.txt"
+        if not os.path.exists(current_js_file):
+            current_js_file = f"{d_dir}/evidence/js_files.txt"
+        current_urls = []
         if os.path.exists(current_js_file):
             with open(current_js_file) as f:
                 current_urls = [l.strip() for l in f if l.strip()]
@@ -2802,20 +2959,15 @@ class DeepRecon:
         # Wayback URLs se path nikalo — current site pe check karo
         wayback_paths = set()
         for url in wayback_urls:
-            try:
-                from urllib.parse import urlparse, urlunparse
-                parsed = urlparse(url)
+            parsed = urlparse(url)
+            if parsed.path:
                 wayback_paths.add(parsed.path)
-            except Exception:
-                pass
 
         current_paths = set()
         for url in current_urls:
-            try:
-                parsed = urlparse(url)
+            parsed = urlparse(url)
+            if parsed.path:
                 current_paths.add(parsed.path)
-            except Exception:
-                pass
 
         # Deleted paths — wayback mein hai lekin current mein nahi
         deleted_paths = wayback_paths - current_paths
@@ -2837,19 +2989,30 @@ class DeepRecon:
         for wb_url in wayback_urls[:80]:   # max 80 files check
             try:
                 time.sleep(random.uniform(0.3, 0.8))
-                # Wayback archived version fetch karo
-                # Correct Wayback archived URL format
-                wb_fetch = f"https://web.archive.org/web/20230101000000*/{wb_url}"
-                r = requests.get(wb_fetch, timeout=12)
-                if r.status_code != 200 or len(r.text) < 100:
+                # FIX v12 CRITICAL: * hataao — * CDX wildcard hai, content URL mein nahi hota
+                # Galat: /web/20230101000000*/{url}  ← yeh 400/404 deta tha
+                # Sahi:  /web/2/{url}               ← latest available snapshot fetch karta hai
+                wb_fetch = f"https://web.archive.org/web/2/{wb_url}"
+                # FIX v12: self._http use karo — stealth + retry
+                r = self._http.get(wb_fetch, timeout=15)
+                if not r or r.status_code != 200 or len(r.text) < 100:
                     continue
                 js_content = r.text[:100_000]   # 100KB cap
+
+                # Save snapshot to disk — TruffleHog filesystem scan ke liye
+                fname = re.sub(r'[^a-zA-Z0-9_.-]', '_', wb_url)[-100:] + ".js"
+                snap_path = os.path.join(js_dir, fname)
+                try:
+                    with open(snap_path, "w", encoding="utf-8", errors="replace") as sf:
+                        sf.write(js_content)
+                except Exception:
+                    pass
 
                 # Endpoints extract
                 for match in endpoint_re.findall(js_content):
                     found_endpoints.add(match)
 
-                # Secrets extract
+                # Regex secrets extract
                 for match in secret_re.findall(js_content):
                     if len(match) >= 10:
                         found_secrets.append(f"{wb_url} → {match[:60]}")
@@ -2861,22 +3024,44 @@ class DeepRecon:
         print(f"      JS files checked: {Fore.GREEN}{checked}")
         print(f"      Unique endpoints: {Fore.GREEN}{len(found_endpoints)}")
         if found_secrets:
-            print(f"      *** Secrets in old JS: {Fore.RED}{len(found_secrets)} ***")
+            print(f"      Regex secrets (old JS): {Fore.YELLOW}{len(found_secrets)}")
+
+        # ── TruffleHog scan on downloaded Wayback JS snapshots ────────────────
+        th_jsdiff = 0
+        if self.available.get("trufflehog"):
+            snap_count = len([f for f in os.listdir(js_dir) if f.endswith(".js")])
+            if snap_count > 0:
+                print(f"{Fore.CYAN}  [*] TruffleHog scan — {snap_count} Wayback JS snapshots...")
+                th_out_jsdiff = f"{evidence}/trufflehog_wayback_js.txt"
+                th_jsdiff = self._run_trufflehog(js_dir, th_out_jsdiff, label="Wayback JS")
+                if th_jsdiff > 0:
+                    print(f"{Fore.RED}      🔑 TruffleHog (Wayback): {th_jsdiff} secrets!")
+                    self.notify_discord(
+                        f"[{domain}] 🔑 TruffleHog: {th_jsdiff} secrets in historical JS!"
+                    )
+
+        total_secrets = len(found_secrets) + th_jsdiff
+        if total_secrets > 0:
+            print(f"{Fore.RED}      *** Total secrets in old JS: {total_secrets} "
+                  f"(regex:{len(found_secrets)}, trufflehog:{th_jsdiff}) ***")
 
         # Save results
-        if found_endpoints or found_secrets:
+        if found_endpoints or found_secrets or th_jsdiff:
             with open(out_file, "w") as f:
                 f.write(f"JS Diff Analysis — {domain}\n")
                 f.write(f"Wayback JS: {len(wayback_urls)} | Checked: {checked}\n")
-                f.write(f"Deleted paths: {len(deleted_paths)}\n\n")
+                f.write(f"Deleted paths: {len(deleted_paths)}\n")
+                f.write(f"TruffleHog findings: {th_jsdiff}\n\n")
                 if found_endpoints:
                     f.write("── ENDPOINTS (historical) ──\n")
                     for ep in sorted(found_endpoints):
                         f.write(f"  {ep}\n")
                 if found_secrets:
-                    f.write("\n── SECRETS IN OLD JS ──\n")
+                    f.write("\n── REGEX SECRETS IN OLD JS ──\n")
                     for s in found_secrets:
                         f.write(f"  {s}\n")
+                if th_jsdiff > 0:
+                    f.write(f"\n── TRUFFLEHOG FINDINGS → see {evidence}/trufflehog_wayback_js.txt ──\n")
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "jsdiff")
@@ -2901,21 +3086,26 @@ class DeepRecon:
             "Live hosts":             self.count_lines(f"{d_dir}/live.txt"),
             "200 OK":                 self.count_lines(f"{d_dir}/live_200.txt"),
             "Endpoints (total)":      self.count_lines(f"{d_dir}/all_endpoints.txt"),
-            "Vulns (nuclei)":         self.count_lines(f"{evidence}/vulns.txt"),
+            "Vulns (nuclei)":         self.count_lines(f"{evidence}/vulns.txt") + self.count_lines(f"{evidence}/vulns_cve.txt"),
             "XSS params":             self.count_lines(f"{evidence}/xss.txt"),
             "SQLi params":            self.count_lines(f"{evidence}/sqli.txt"),
             "SSRF params":            self.count_lines(f"{evidence}/ssrf.txt"),
             "SSTI params":            self.count_lines(f"{evidence}/ssti.txt"),
             "Open Redirect":          self.count_lines(f"{evidence}/open_redirect.txt"),
             "LFI params":             self.count_lines(f"{evidence}/lfi.txt"),
-            "Takeover candidates":    self.count_lines(f"{evidence}/takeover.txt"),
+            # FIX v12: duplicate key bug — ek hi "Takeover candidates" key hona chahiye
+            # Phase 9 ka output (takeover_candidates.txt) correct hai
+            # Phase 4 se subzy remove kar diya — ek hi jagah ab
+            "Takeover candidates":    self.count_lines(f"{evidence}/takeover_candidates.txt"),
             "JS Secrets":             self.count_lines(f"{evidence}/js_secrets.txt"),
+            "TruffleHog (live JS)":   self.count_lines(f"{evidence}/trufflehog_js.txt"),
+            "TruffleHog (Wayback)":   self.count_lines(f"{evidence}/trufflehog_wayback_js.txt"),
             "403 Bypassed":           self.count_lines(f"{evidence}/403_bypass.txt"),
             "CORS issues":            self.count_lines(f"{evidence}/cors.txt"),
             "Cloud assets":           self.count_lines(f"{evidence}/cloud_assets.txt"),
             "GitHub leaks (files)":   self.count_lines(f"{evidence}/github_leaks.txt"),
-            "Takeover candidates":    self.count_lines(f"{evidence}/takeover_candidates.txt"),
             "ASN IP ranges":          self.count_lines(f"{evidence}/asn_ranges.txt"),
+            "ASN open ports":         self.count_lines(f"{evidence}/asn_open_ports.txt"),
             "ASN live hosts":         self.count_lines(f"{evidence}/asn_live_hosts.txt"),
             "JS diff endpoints":      self.count_lines(f"{evidence}/js_diff_endpoints.txt"),
         }
@@ -2937,6 +3127,7 @@ class DeepRecon:
             "Takeover candidates", "VHosts found", "Non-std port services",
             "Cloud assets", "SSTI params", "GitHub leaks (files)",
             "ASN live hosts", "JS diff endpoints",
+            "TruffleHog (live JS)", "TruffleHog (Wayback)",
         }
 
         print(f"\n{Fore.MAGENTA}{'═'*52}")
@@ -2961,6 +3152,7 @@ class DeepRecon:
             "Vulns (nuclei)", "JS Secrets", "403 Bypassed",
             "Takeover candidates", "VHosts found", "Non-std port services",
             "Cloud assets",
+            "TruffleHog (live JS)", "TruffleHog (Wayback)",
         }
         for k, v in stats.items():
             cls = "high" if (k in HIGH_VALUE and v > 0) else ("ok" if v > 0 else "zero")
@@ -2984,7 +3176,7 @@ class DeepRecon:
 </style>
 </head>
 <body>
-<h1>🔥 GHOST PROTOCOL v10.0</h1>
+<h1>🔥 GHOST PROTOCOL v12.0</h1>
 <h2>Target: {domain}</h2>
 <p>Scan time: {ts}</p>
 <table>
@@ -3003,15 +3195,24 @@ class DeepRecon:
         url = f"https://crt.sh/?q=%25.{domain}&output=json"
         for attempt in range(3):
             try:
-                r = requests.get(url, timeout=25)
+                r = self._http.get(url, timeout=25)
+                if r is None:
+                    self.logger.warning(f"crt.sh: no response for {domain} (attempt {attempt+1})")
+                    time.sleep(5 * (attempt + 1))
+                    continue
                 if r.status_code == 429:
                     wait = 10 * (attempt + 1)
                     self.logger.warning(f"crt.sh 429 — waiting {wait}s (attempt {attempt+1})")
                     time.sleep(wait)
                     continue
                 if r.status_code == 200:
+                    try:
+                        entries = r.json()
+                    except (json.JSONDecodeError, ValueError) as e:
+                        self.logger.warning(f"crt.sh JSON parse failed for {domain}: {e}")
+                        break
                     names = set()
-                    for entry in r.json():
+                    for entry in entries:
                         for name in entry.get("name_value", "").splitlines():
                             name = name.strip().lstrip("*.").lower()
                             if name and re.match(r'^[a-zA-Z0-9._-]+$', name):
@@ -3021,11 +3222,8 @@ class DeepRecon:
                         f.write("\n".join(names) + "\n")
                     self.logger.info(f"crt.sh: {len(names)} subs for {domain}")
                     return
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 self.logger.warning(f"crt.sh failed for {domain}: {e}")
-                break
-            except (json.JSONDecodeError, ValueError) as e:
-                self.logger.warning(f"crt.sh JSON parse failed for {domain}: {e}")
                 break
 
     # ── Master Controller ──────────────────────────────────────────────────────
@@ -3088,7 +3286,7 @@ class DeepRecon:
 {Fore.YELLOW}  ██║   ██║██╔══██║██║   ██║╚════██║   ██║
 {Fore.GREEN}  ╚██████╔╝██║  ██║╚██████╔╝███████║   ██║
 {Fore.GREEN}   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝
-{Fore.CYAN}       PROTOCOL v10.0 — Bug Bounty Edition
+{Fore.CYAN}       PROTOCOL v12.0 — Bug Bounty Edition
 {Fore.WHITE}       Targets: {len(self.targets)} | Session: {self.session_id}
 {Fore.YELLOW}       Wordlist: {self.wordlist or "NOT FOUND — bruteforce skip"}
 {Fore.YELLOW}       Phases:   {', '.join(self.phases)}
@@ -3112,7 +3310,7 @@ class DeepRecon:
 # ─── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ghost Protocol v10.0 — Bug Bounty Deep Recon",
+        description="Ghost Protocol v12.0 — Bug Bounty Deep Recon",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("targets", help="targets.txt — ek line par ek domain")
@@ -3137,6 +3335,10 @@ def parse_args() -> argparse.Namespace:
         help="Nuclei template auto-update skip karo"
     )
     parser.add_argument(
+        "--passive", action="store_true",
+        help="Passive only mode — bruteforce/port scan skip (OSINT recon)"
+    )
+    parser.add_argument(
         "--output-dir", default="",
         help="Output directory (resume/re-run friendly). Default: timestamped folder"
     )
@@ -3158,6 +3360,7 @@ if __name__ == "__main__":
         skip_nuclei_update=args.skip_nuclei_update,
         output_dir=args.output_dir,
         force=args.force,
+        passive=args.passive,
     )
 
     if args.force and args.output_dir:
