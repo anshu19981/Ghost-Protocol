@@ -9,6 +9,7 @@ markdown
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%2F%20macOS-lightgrey?style=flat-square)
 
 ---
+<img width="906" height="142" alt="2026-05-23_12-24" src="https://github.com/user-attachments/assets/3dd6fa48-1d9e-499c-82ac-2fd6c3583a49" />
 
 ## ⚠️ Legal Disclaimer
 
