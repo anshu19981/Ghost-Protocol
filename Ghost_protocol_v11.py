@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║         GHOST PROTOCOL v12.0 — DEEP RECON ENGINE                ║
+║         GHOST PROTOCOL v13.0 — DEEP RECON ENGINE                ║
 ║              Bug Bounty Hunter Edition                           ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  FIXED in v10.0 (over v9.0):                                    ║
@@ -26,6 +26,22 @@
 ║  NEW: Param discovery — paramspider integration                 ║
 ║  NEW: Technology fingerprinting — wappalyzer-go                 ║
 ║  NEW: HTML report generator — summary.html in output dir        ║
+╠══════════════════════════════════════════════════════════════════╣
+║  CHANGED in v13.0 (more BB findings, fewer silent misses):      ║
+║  ✔ P0 FIX: deep pipeline ab live_ALL pe (200+30x+401+403),      ║
+║            sirf 200 pe nahi — 403/401/redirect hosts ab scan     ║
+║            hote hain. 403-bypass engine ab all-403 targets pe    ║
+║            actually chalta hai.                                   ║
+║  ✔ P0 FIX: httpx -json parsing — status_code field se reliable  ║
+║            bucketing. Pehle '[200]'/'[403]' substring match      ║
+║            content-length se collide hota tha (false buckets).   ║
+║  ✔ FIX: Phase 3 (gau/wayback) ab unconditional — passive hai,   ║
+║         live host na ho tab bhi historical URLs aate hain.       ║
+║  ✔ NEW: findings.json — normalized, severity-sorted, triage-    ║
+║         ready aggregate of all evidence (team workflow).         ║
+║  ✔ TUNE: gau --mc filter hata diya (401/403 historical bhi),    ║
+║          nuclei -mhe 30 (dead hosts drop), regex secrets ko      ║
+║          [unverified] tag (trufflehog verified se alag).         ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  MERGED + WIRED in v12.0 (single-file build):                   ║
 ║  ✔ GhostConfig — env/.env se proxy, rate-limit, webhook load   ║
@@ -674,6 +690,7 @@ class SmartNuclei:
                 f"-severity {severity} "
                 f"-etags {skip_tags} "
                 f"-rl {self.rate_limit} "
+                f"-mhe 30 "          # max-host-error: dead host 30 fails ke baad drop
                 f"-silent -no-color "
                 f"-o {_shlex.quote(output_file)}"
             )
@@ -691,6 +708,7 @@ class SmartNuclei:
                 f"-etags {skip_tags} "
                 f"{custom_flag}"
                 f"-rl {self.rate_limit} "
+                f"-mhe 30 "          # max-host-error: dead host 30 fails ke baad drop
                 f"-silent -no-color "
                 f"-o {_shlex.quote(output_file)}"
             )
@@ -1409,7 +1427,53 @@ class DeepRecon:
         with open(clean_file, "w") as f:
             f.write("\n".join(sorted(domains)) + "\n")
 
+    def _parse_httpx_json(self, json_file: str, live_file: str,
+                          live_200: str, live_all: str):
+        """
+        v13: httpx -json output parse karo — status_code field se RELIABLE bucketing.
+        Purana substring approach ('[200]' in line) content-length se collide hota tha.
+
+        Produces:
+          live_file → clean text  : url [status] [server] title   (downstream display)
+          live_200  → url-only    : sirf status == 200
+          live_all  → url-only    : koi bhi HTTP response (200/30x/401/403/5xx) = full surface
+        """
+        records = []   # (url, status:int, server, title)
+        if self.file_has_content(json_file):
+            with open(json_file, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    url = obj.get("url") or obj.get("input") or ""
+                    if not url:
+                        continue
+                    raw_sc = obj.get("status_code", obj.get("status-code", 0))
+                    try:
+                        sc = int(raw_sc)
+                    except (TypeError, ValueError):
+                        sc = 0
+                    server = obj.get("webserver") or obj.get("web_server") or ""
+                    title  = (obj.get("title") or "").replace("\n", " ").strip()
+                    records.append((url, sc, server, title))
+
+        # Clean text live.txt — status hamesha doosra field, content-length yahan nahi
+        with open(live_file, "w") as f:
+            for url, sc, server, title in records:
+                sb = f" [{server}]" if server else ""
+                tb = f" {title}" if title else ""
+                f.write(f"{url} [{sc}]{sb}{tb}\n")
+
+        self._write_unique_sorted_lines(live_200, [u for u, s, _, _ in records if s == 200])
+        # live_all: koi bhi real HTTP response. s>0 matlab httpx ne status report kiya.
+        self._write_unique_sorted_lines(live_all, [u for u, s, _, _ in records if s > 0])
+
     def _extract_httpx_200_urls(self, live_file: str, out_file: str):
+        # LEGACY (v13 mein replace by _parse_httpx_json) — retained for compatibility
         urls = []
         if self.file_has_content(live_file):
             with open(live_file, encoding="utf-8", errors="replace") as f:
@@ -1722,11 +1786,12 @@ class DeepRecon:
     # ── PHASE 2: PORT SCAN + PROBING ──────────────────────────────────────────
     def phase2_port_and_probe(self, domain: str, d_dir: str, resolved: str) -> tuple:
         if not self._phase_enabled("probe"):
-            return f"{d_dir}/live.txt", f"{d_dir}/live_200.txt"
+            return f"{d_dir}/live.txt", f"{d_dir}/live_200.txt", f"{d_dir}/live_all.txt"
         if not self.force and self._phase_is_done(d_dir, "probe"):
             live_file = f"{d_dir}/live.txt"
             live_200  = f"{d_dir}/live_200.txt"
-            return live_file, live_200
+            live_all  = f"{d_dir}/live_all.txt"
+            return live_file, live_200, live_all
 
         t0 = self.phase_timer("PHASE 2: PORT SCAN + PORT-WISE PROBING")
         port_file = f"{d_dir}/open_ports.txt"
@@ -1789,25 +1854,32 @@ class DeepRecon:
                     psf.write(f"  {h}\n")
                 psf.write("\n")
 
-        # ── 2c. httpx Probe ──────────────────────────────────────────────────
-        live_file = f"{d_dir}/live.txt"
-        live_200  = f"{d_dir}/live_200.txt"
+        # ── 2c. httpx Probe (JSON mode — reliable status parsing) ─────────────
+        # FIX v13: -json output use karo. Pehle text format mein "[200]"/"[403]"
+        # substring match content-length se collide hota tha (e.g. content-length=200
+        # → galat 200-OK bucket). Ab status_code field se positionally parse karte hain.
+        live_file = f"{d_dir}/live.txt"      # clean text: url [status] [server] title
+        live_200  = f"{d_dir}/live_200.txt"  # strict 200 only
+        live_all  = f"{d_dir}/live_all.txt"  # 200 + 30x + 401 + 403 + … = full attack surface
+        live_json = self._tmpfile(f"httpx_{domain}.jsonl")
         input_for_httpx = port_file if self.file_has_content(port_file) else resolved
 
         self.run_cmd(
             f"httpx -l {self._q(input_for_httpx)} -silent -t {THREADS_HTTPX} "
             f"-sc -td -title -web-server -content-length -cdn -follow-redirects "
-            f"-o {self._q(live_file)}",
-            "HTTP probing (all ports)"
+            f"-json -o {self._q(live_json)}",
+            "HTTP probing (all ports, JSON)"
         )
 
-        # FIX: live_200 — httpx output format: URL [SC] [...]
-        self._extract_httpx_200_urls(live_file, live_200)
+        self._parse_httpx_json(live_json, live_file, live_200, live_all)
 
         live_count = self.count_lines(live_file)
         ok_count   = self.count_lines(live_200)
+        all_count  = self.count_lines(live_all)
         print(f"\n      Live responses: {Fore.GREEN}{live_count}")
         print(f"      200 OK:         {Fore.GREEN}{ok_count}")
+        print(f"      Live (all SC):  {Fore.GREEN}{all_count}{Fore.WHITE} "
+              f"← pipeline ab ispe chalega (403/401/30x bhi)")
 
         # ── 2d. Per-port live files ───────────────────────────────────────────
         print(f"\n{Fore.YELLOW}      ── Live Services by Port ──")
@@ -1860,19 +1932,20 @@ class DeepRecon:
                 )
 
         # ── 2f. VHost Bruteforce ─────────────────────────────────────────────
-        if VHOST_BRUTE and self.file_has_content(live_200):
-            self._run_vhost_brute(domain, d_dir, live_200)
+        # v13: live_all use karo — 403/401 hosts ke peeche bhi vhosts ho sakte hain
+        if VHOST_BRUTE and self.file_has_content(live_all):
+            self._run_vhost_brute(domain, d_dir, live_all)
 
         # ── 2g. Technology Fingerprinting ────────────────────────────────────
-        if self.available.get("wappalyzergo") and self.file_has_content(live_200):
+        if self.available.get("wappalyzergo") and self.file_has_content(live_all):
             self.run_cmd(
-                f"wappalyzergo -f {self._q(live_200)} -o {self._q(d_dir + '/evidence/technologies.json')} 2>/dev/null",
+                f"wappalyzergo -f {self._q(live_all)} -o {self._q(d_dir + '/evidence/technologies.json')} 2>/dev/null",
                 "Technology fingerprinting"
             )
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "probe")
-        return live_file, live_200
+        return live_file, live_200, live_all
 
     def _extract_port_from_url(self, url: str) -> str:
         """URL se port extract karo."""
@@ -1884,7 +1957,7 @@ class DeepRecon:
         except Exception:
             return "80"
 
-    def _run_vhost_brute(self, domain: str, d_dir: str, live_200: str):
+    def _run_vhost_brute(self, domain: str, d_dir: str, live_urls: str):
         """
         FIX: ffuf output parsing improved, proper JSON handling.
         """
@@ -1901,8 +1974,8 @@ class DeepRecon:
         print(f"{Fore.CYAN}  [*] VHost bruteforce (ffuf)...")
 
         targets = []
-        if self.file_has_content(live_200):
-            with open(live_200) as f:
+        if self.file_has_content(live_urls):
+            with open(live_urls) as f:
                 targets = [l.strip() for l in f if l.strip()][:5]
 
         found_total = 0
@@ -1944,8 +2017,10 @@ class DeepRecon:
         t0 = self.phase_timer("PHASE 3: HISTORICAL URLS")
         hist_file = f"{d_dir}/historical_urls.txt"
 
+        # v13: --mc filter hata diya — recon mein 401/403/404 historical endpoints bhi
+        # valuable hote hain (purane admin paths, deprecated API routes). Sab le aao.
         self.run_cmd(
-            f"gau {self._q(domain)} --mc 200,301,302 --threads 5 -o {self._q(hist_file)}",
+            f"gau {self._q(domain)} --threads 5 -o {self._q(hist_file)}",
             "GAU"
         )
         if self.available.get("waybackurls"):
@@ -1964,7 +2039,7 @@ class DeepRecon:
         return hist_file
 
     # ── PHASE 4: SCAN + CRAWL ─────────────────────────────────────────────────
-    def phase4_scan_crawl(self, domain: str, d_dir: str, live_200: str, hist_file: str) -> str:
+    def phase4_scan_crawl(self, domain: str, d_dir: str, live_urls: str, hist_file: str) -> str:
         if not self._phase_enabled("scan"):
             return f"{d_dir}/all_endpoints.txt"
         if not self.force and self._phase_is_done(d_dir, "scan"):
@@ -1982,13 +2057,13 @@ class DeepRecon:
         # Nuclei — SmartNuclei se smart command build karo
         _nuclei = SmartNuclei(rate_limit=NUCLEI_RATE_LIMIT, deep=False)
         nuclei_cmd = _nuclei.build_cmd(
-            targets_file=self._q(live_200),
+            targets_file=self._q(live_urls),
             output_file=f"{evidence}/vulns.txt",
             severity="critical,high,medium"
         )
         # Priority CVEs bhi alag run karo
         nuclei_cve_cmd = _nuclei.build_cve_cmd(
-            targets_file=self._q(live_200),
+            targets_file=self._q(live_urls),
             output_file=f"{evidence}/vulns_cve.txt"
         )
         self.run_cmd(nuclei_cmd, "Nuclei smart scan (critical/high/medium)")
@@ -2000,7 +2075,7 @@ class DeepRecon:
 
         # Katana crawl
         self.run_cmd(
-            f"katana -list {self._q(live_200)} -jc -d {KATANA_DEPTH} -kf all -silent -o {self._q(endpoints)}",
+            f"katana -list {self._q(live_urls)} -jc -d {KATANA_DEPTH} -kf all -silent -o {self._q(endpoints)}",
             f"Katana (depth={KATANA_DEPTH})"
         )
 
@@ -2013,7 +2088,7 @@ class DeepRecon:
         # FIX: gowitness v3 API — old --disable-db flag removed
         if self.available.get("gowitness"):
             gowitness_cmd = (
-                f"gowitness scan file -f {self._q(live_200)} "
+                f"gowitness scan file -f {self._q(live_urls)} "
                 f"--threads {THREADS_GOWITNESS} "
                 f"--screenshot-path {self._q(evidence + '/screenshots')}"
             )
@@ -2021,7 +2096,7 @@ class DeepRecon:
             result = self.run_cmd_list(["gowitness", "--version"])
             if result and "v2" in result.lower():
                 gowitness_cmd = (
-                    f"gowitness file -f {self._q(live_200)} "
+                    f"gowitness file -f {self._q(live_urls)} "
                     f"--threads {THREADS_GOWITNESS} "
                     f"--screenshot-path {self._q(evidence + '/screenshots')} --disable-db"
                 )
@@ -2032,14 +2107,14 @@ class DeepRecon:
         # Phase 9 mein subzy properly run hota hai with correct output path
 
         # Param Discovery
-        if PARAM_DISCOVERY and self.available.get("paramspider") and self.file_has_content(live_200):
-            self._run_param_discovery(domain, d_dir, live_200, merged)
+        if PARAM_DISCOVERY and self.available.get("paramspider") and self.file_has_content(live_urls):
+            self._run_param_discovery(domain, d_dir, live_urls, merged)
 
         self.phase_done(t0)
         self._mark_phase_done(d_dir, "scan")
         return merged
 
-    def _run_param_discovery(self, domain: str, d_dir: str, live_200: str, merged: str):
+    def _run_param_discovery(self, domain: str, d_dir: str, live_urls: str, merged: str):
         """paramspider se parameter discovery."""
         print(f"{Fore.CYAN}  [*] Param discovery (paramspider)...")
         param_out = f"{d_dir}/evidence/params.txt"
@@ -2051,16 +2126,16 @@ class DeepRecon:
             total = self._merge_unique(merged, param_out, out=merged)
             print(f"      After param discovery: {Fore.GREEN}{total} endpoints")
 
-    def _extract_subjs_urls(self, live_200: str, js_urls: str):
+    def _extract_subjs_urls(self, live_urls: str, js_urls: str):
         js_raw = self.run_cmd(
-            f"subjs -i {self._q(live_200)} -c 20",
+            f"subjs -i {self._q(live_urls)} -c 20",
             "Extracting JS URLs",
             allow_exit_codes=(0, 1)
         )
         if not js_raw:
             # Compatibility fallback for older subjs builds
             js_raw = self.run_cmd(
-                f"cat {self._q(live_200)} | subjs -c 20",
+                f"cat {self._q(live_urls)} | subjs -c 20",
                 "Extracting JS URLs (fallback)",
                 allow_exit_codes=(0, 1)
             )
@@ -2089,7 +2164,9 @@ class DeepRecon:
                 body = r.text[:1_000_000]
                 for m in regex.finditer(body):
                     key = m.group(0)[:220]
-                    findings.add(f"{u} :: {key}")
+                    # v13: regex hits high-FP hote hain — [unverified] tag karo taaki
+                    # trufflehog ke verified secrets se alag triage kar sako
+                    findings.add(f"[unverified] {u} :: {key}")
             except Exception:
                 continue
         self._write_unique_sorted_lines(out_file, sorted(findings))
@@ -2203,13 +2280,13 @@ class DeepRecon:
         return len(findings)
 
     # ── PHASE 5: JS SECRET HUNTING ─────────────────────────────────────────────
-    def phase5_js_secrets(self, domain: str, d_dir: str, live_200: str):
+    def phase5_js_secrets(self, domain: str, d_dir: str, live_urls: str):
         if not self._phase_enabled("js"):
             return
         if not self.force and self._phase_is_done(d_dir, "js"):
             return
-        if not self.file_has_content(live_200):
-            print(f"{Fore.YELLOW}      [~] No live_200 input — JS analysis skip.")
+        if not self.file_has_content(live_urls):
+            print(f"{Fore.YELLOW}      [~] No live_urls input — JS analysis skip.")
             return
 
         t0 = self.phase_timer("PHASE 5: JS SECRET HUNTING")
@@ -2218,12 +2295,12 @@ class DeepRecon:
 
         # FIX v12: subjs nahi hai toh Python fallback use karo — phase skip nahi karo
         if self.available.get("subjs"):
-            self._extract_subjs_urls(live_200, js_urls)
+            self._extract_subjs_urls(live_urls, js_urls)
         else:
             print(f"{Fore.YELLOW}      [~] subjs not found — katana JS extraction use kar rahe hain")
             # katana JS link extraction fallback
             self.run_cmd(
-                f"katana -list {self._q(live_200)} -jc -d 2 -kf all -silent "
+                f"katana -list {self._q(live_urls)} -jc -d 2 -kf all -silent "
                 f"-ef css,font,woff,woff2,png,jpg,gif,svg,ico "
                 f"| grep '\\.js' > {self._q(js_urls)} 2>/dev/null",
                 allow_exit_codes=(0, 1)
@@ -2231,7 +2308,7 @@ class DeepRecon:
             if not self.file_has_content(js_urls):
                 # Last fallback: httpx pe grep karo JS links ke liye
                 self.run_cmd(
-                    f"httpx -l {self._q(live_200)} -silent -match-regex '\\.js([?#]|$)' "
+                    f"httpx -l {self._q(live_urls)} -silent -match-regex '\\.js([?#]|$)' "
                     f"-o {self._q(js_urls)} 2>/dev/null",
                     allow_exit_codes=(0, 1)
                 )
@@ -2306,9 +2383,9 @@ class DeepRecon:
         self._mark_phase_done(d_dir, "js")
 
     # ── PHASE 6: DATA MINING ──────────────────────────────────────────────────
-    def phase6_data_mining(self, domain: str, d_dir: str, live_200: str, merged_endpoints: str):
+    def phase6_data_mining(self, domain: str, d_dir: str, live_urls: str, merged_endpoints: str):
         """
-        FIX: live_200 parameter now properly passed from caller (was using hardcoded path before).
+        FIX: live_urls parameter now properly passed from caller (was using hardcoded path before).
         """
         if not self._phase_enabled("mine"):
             return
@@ -2336,14 +2413,14 @@ class DeepRecon:
         # CORS check
         if self.available.get("corsy"):
             self.run_cmd(
-                f"corsy -i {self._q(live_200)} -t 10 --headers 'User-Agent: Mozilla' "
+                f"corsy -i {self._q(live_urls)} -t 10 --headers 'User-Agent: Mozilla' "
                 f"-o {self._q(evidence + '/cors.txt')} 2>/dev/null",
                 "CORS check (corsy)"
             )
         else:
             # FIX v12: -match-regex deprecated → -mr (newer httpx versions)
             self.run_cmd(
-                f"httpx -l {self._q(live_200)} -silent "
+                f"httpx -l {self._q(live_urls)} -silent "
                 f"-H 'Origin: https://evil.com' "
                 f"-mr 'Access-Control-Allow-Origin: https://evil.com' "
                 f"-o {self._q(evidence + '/cors.txt')} 2>/dev/null",
@@ -3067,6 +3144,94 @@ class DeepRecon:
         self._mark_phase_done(d_dir, "jsdiff")
 
     # ── SUMMARY ───────────────────────────────────────────────────────────────
+    def _aggregate_findings(self, domain: str, d_dir: str) -> int:
+        """
+        v13: Sari bikhri findings ko ek normalized findings.json mein collect karo.
+        Triage, dedup-across-targets, aur dusre tools mein import easy ho jaata hai.
+
+        Schema (list of):
+          {target, type, severity, source, detail}
+        Severity: critical | high | medium | low | info
+        """
+        evidence = f"{d_dir}/evidence"
+        findings = []
+        _SEV = {"critical", "high", "medium", "low", "info"}
+
+        def _read_lines(path):
+            if not self.file_has_content(path):
+                return []
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    return [l.strip() for l in f if l.strip()]
+            except Exception:
+                return []
+
+        def _add(ftype, severity, source, lines):
+            for ln in lines:
+                findings.append({
+                    "target":   domain,
+                    "type":     ftype,
+                    "severity": severity,
+                    "source":   source,
+                    "detail":   ln[:500],
+                })
+
+        # ── Nuclei — severity line se parse karo: [id] [proto] [sev] url ──────
+        for nf in (f"{evidence}/vulns.txt", f"{evidence}/vulns_cve.txt"):
+            for ln in _read_lines(nf):
+                sev = "info"
+                for tok in re.findall(r"\[([a-z]+)\]", ln.lower()):
+                    if tok in _SEV:
+                        sev = tok
+                        break
+                findings.append({
+                    "target": domain, "type": "nuclei", "severity": sev,
+                    "source": os.path.basename(nf), "detail": ln[:500],
+                })
+
+        # ── High-confidence buckets ──────────────────────────────────────────
+        _add("subdomain-takeover", "high",   "takeover_candidates.txt",
+             _read_lines(f"{evidence}/takeover_candidates.txt"))
+        _add("secret-verified",    "high",   "trufflehog_js.txt",
+             _read_lines(f"{evidence}/trufflehog_js.txt"))
+        _add("secret-verified",    "high",   "trufflehog_wayback_js.txt",
+             _read_lines(f"{evidence}/trufflehog_wayback_js.txt"))
+        _add("403-bypass",         "medium", "403_bypass.txt",
+             _read_lines(f"{evidence}/403_bypass.txt"))
+        _add("cors-misconfig",     "medium", "cors.txt",
+             _read_lines(f"{evidence}/cors.txt"))
+        _add("github-leak",        "medium", "github_leaks.txt",
+             _read_lines(f"{evidence}/github_leaks.txt"))
+        # secret (regex) — [unverified] tag already lagaya hua hai → low
+        _add("secret-unverified",  "low",    "js_secrets.txt",
+             _read_lines(f"{evidence}/js_secrets.txt"))
+        _add("cloud-asset",        "info",   "cloud_assets.txt",
+             _read_lines(f"{evidence}/cloud_assets.txt"))
+        _add("nonstd-service",     "info",   "nonstandard_live.txt",
+             _read_lines(f"{d_dir}/nonstandard_live.txt"))
+
+        # Severity ke hisaab se sort — critical pehle
+        _order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings.sort(key=lambda x: _order.get(x["severity"], 9))
+
+        out = {
+            "target":         domain,
+            "timestamp":      datetime.datetime.now().isoformat(),
+            "total_findings": len(findings),
+            "by_severity": {
+                s: sum(1 for f in findings if f["severity"] == s) for s in _SEV
+            },
+            "findings": findings,
+        }
+        with open(f"{d_dir}/findings.json", "w") as f:
+            json.dump(out, f, indent=2)
+
+        actionable = sum(1 for f in findings if f["severity"] in ("critical", "high", "medium"))
+        if actionable:
+            print(f"  {Fore.RED}★ Actionable findings (crit/high/med): {actionable}"
+                  f"{Style.RESET_ALL} → {d_dir}/findings.json")
+        return len(findings)
+
     def generate_summary(self, domain: str, d_dir: str):
         evidence    = f"{d_dir}/evidence"
         nonstd_live = f"{d_dir}/nonstandard_live.txt"
@@ -3084,6 +3249,7 @@ class DeepRecon:
             "Non-std port services":  self.count_lines(nonstd_live),
             "VHosts found":           self.count_lines(f"{evidence}/vhosts.txt"),
             "Live hosts":             self.count_lines(f"{d_dir}/live.txt"),
+            "Live (all SC)":          self.count_lines(f"{d_dir}/live_all.txt"),
             "200 OK":                 self.count_lines(f"{d_dir}/live_200.txt"),
             "Endpoints (total)":      self.count_lines(f"{d_dir}/all_endpoints.txt"),
             "Vulns (nuclei)":         self.count_lines(f"{evidence}/vulns.txt") + self.count_lines(f"{evidence}/vulns_cve.txt"),
@@ -3118,6 +3284,9 @@ class DeepRecon:
 
         with open(f"{d_dir}/summary.json", "w") as f:
             json.dump(summary_data, f, indent=2)
+
+        # v13: normalized findings.json — triage-ready, severity-sorted
+        self._aggregate_findings(domain, d_dir)
 
         # HTML report
         self._generate_html_report(domain, d_dir, summary_data)
@@ -3176,7 +3345,7 @@ class DeepRecon:
 </style>
 </head>
 <body>
-<h1>🔥 GHOST PROTOCOL v12.0</h1>
+<h1>🔥 GHOST PROTOCOL v13.0</h1>
 <h2>Target: {domain}</h2>
 <p>Scan time: {ts}</p>
 <table>
@@ -3250,17 +3419,34 @@ class DeepRecon:
         try:
             resolved = self.phase1_subdomain_enum(domain, d_dir)
             resolved = self.phase1b_recursive_brute(domain, d_dir, resolved)
-            live_file, live_200 = self.phase2_port_and_probe(domain, d_dir, resolved)
+            live_file, live_200, live_all = self.phase2_port_and_probe(domain, d_dir, resolved)
 
-            if not self.file_has_content(live_200):
-                print(f"{Fore.RED}  [!] No live 200 OK hosts for {domain}. Deeper phases skip.")
+            # v13 FIX: Phase 3 (gau/wayback) PASSIVE hai — live host pe depend nahi.
+            # Pehle ye live_200 ke peeche gated tha, isliye all-403/all-30x targets pe
+            # historical URLs bhi gayab ho jaate the. Ab hamesha chalao.
+            hist_file = self.phase3_historical_urls(domain, d_dir)
+
+            # v13 FIX: deep pipeline ab live_ALL pe chalta hai (200 + 30x + 401 + 403…),
+            # sirf 200 pe nahi. 403/401/redirect hosts BB gold hote hain — aur ironically
+            # 403-bypass engine (phase6) tab kabhi chalta hi nahi tha jab target poora 403 ho.
+            scan_input = None
+            if self.file_has_content(live_all):
+                scan_input = live_all
+            elif self.file_has_content(hist_file):
+                # Koi live host nahi mila par historical URLs hain — un par hi crawl/scan karo
+                print(f"{Fore.YELLOW}  [~] {domain}: koi live host nahi, par historical "
+                      f"URLs mile — unhi par deep phases chalenge.")
+                scan_input = hist_file
+
+            if scan_input:
+                merged = self.phase4_scan_crawl(domain, d_dir, scan_input, hist_file)
+                self.phase5_js_secrets(domain, d_dir, scan_input)
+                self.phase6_data_mining(domain, d_dir, scan_input, merged)
             else:
-                hist_file = self.phase3_historical_urls(domain, d_dir)
-                merged    = self.phase4_scan_crawl(domain, d_dir, live_200, hist_file)
-                self.phase5_js_secrets(domain, d_dir, live_200)
-                # FIX: pass live_200 properly — was using hardcoded path before
-                self.phase6_data_mining(domain, d_dir, live_200, merged)
-            # Cloud + GitHub + Takeover + ASN + JS Diff — live_200 pe depend nahi
+                print(f"{Fore.RED}  [!] {domain}: na live host na historical URL. "
+                      f"Crawl/scan/mine phases skip (cloud/github/takeover/asn phir bhi chalenge).")
+
+            # Cloud + GitHub + Takeover + ASN + JS Diff — live hosts pe depend nahi
             self.phase7_cloud_enum(domain, d_dir)
             self.phase8_github_dork(domain, d_dir)
             # resolved file exist na kare toh fallback path
@@ -3286,7 +3472,7 @@ class DeepRecon:
 {Fore.YELLOW}  ██║   ██║██╔══██║██║   ██║╚════██║   ██║
 {Fore.GREEN}  ╚██████╔╝██║  ██║╚██████╔╝███████║   ██║
 {Fore.GREEN}   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝
-{Fore.CYAN}       PROTOCOL v12.0 — Bug Bounty Edition
+{Fore.CYAN}       PROTOCOL v13.0 — Bug Bounty Edition
 {Fore.WHITE}       Targets: {len(self.targets)} | Session: {self.session_id}
 {Fore.YELLOW}       Wordlist: {self.wordlist or "NOT FOUND — bruteforce skip"}
 {Fore.YELLOW}       Phases:   {', '.join(self.phases)}
@@ -3310,7 +3496,7 @@ class DeepRecon:
 # ─── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ghost Protocol v12.0 — Bug Bounty Deep Recon",
+        description="Ghost Protocol v13.0 — Bug Bounty Deep Recon",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("targets", help="targets.txt — ek line par ek domain")
