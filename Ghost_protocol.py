@@ -475,8 +475,17 @@ class StealthEngine:
         timeout: int     = 10,
         allow_redirects: bool = True,
         retries: int     = None,
+        verify: bool     = False,
         **kwargs
     ) -> Optional[requests.Response]:
+
+        # FIX: `verify` ab named param hai. Pehle koi caller verify=False bhejta
+        # (e.g. _hunt_js_secrets_python) toh wo **kwargs mein chala jaata tha aur
+        # neeche self._session.request(..., verify=False, **kwargs) mein DUPLICATE
+        # keyword ban ke TypeError raise karta tha — jise except Exception swallow
+        # kar leta tha. Result: har JS URL silently skip, regex secret hunt = 0.
+        # Defensive: kahin aur se bhi galti se aaye toh pop kar do.
+        kwargs.pop("verify", None)
 
         domain = urlparse(url).netloc or url
         max_retries = retries if retries is not None else self.MAX_RETRIES
@@ -495,7 +504,7 @@ class StealthEngine:
                     headers       = merged_headers,
                     proxies       = proxy_dict,
                     timeout       = timeout,
-                    verify        = False,
+                    verify        = verify,
                     allow_redirects = allow_redirects,
                     **kwargs
                 )
@@ -1134,6 +1143,11 @@ class DeepRecon:
         self._tmpdir = tempfile.mkdtemp(prefix=f"gp_{self.session_id}_")
         _CLEANUP_DIRS.append(self._tmpdir)
 
+        # FIX: nuclei template update guard — MAX_DOMAINS_PARALLEL>1 hone par
+        # do threads ek saath update chala dete the (race). Lock se ek hi baar.
+        self._nuclei_lock = threading.Lock()
+        self._nuclei_updated = False
+
         if self.dry_run:
             print(f"{Fore.YELLOW}[DRY RUN MODE] Commands will be printed, not executed.\n")
 
@@ -1471,6 +1485,11 @@ class DeepRecon:
         self._write_unique_sorted_lines(live_200, [u for u, s, _, _ in records if s == 200])
         # live_all: koi bhi real HTTP response. s>0 matlab httpx ne status report kiya.
         self._write_unique_sorted_lines(live_all, [u for u, s, _, _ in records if s > 0])
+        # FIX: 403/401 bucket bhi yahin status_code se reliably banao. Pehle phase6
+        # live.txt pe '[403]' substring match karta tha — title/server mein '[403]'
+        # ho toh false bucket. Ab int status se. (auth-walled surface = bypass gold)
+        live_403 = os.path.join(os.path.dirname(live_all) or ".", "live_403.txt")
+        self._write_unique_sorted_lines(live_403, [u for u, s, _, _ in records if s in (401, 403)])
 
     def _extract_httpx_200_urls(self, live_file: str, out_file: str):
         # LEGACY (v13 mein replace by _parse_httpx_json) — retained for compatibility
@@ -2019,8 +2038,10 @@ class DeepRecon:
 
         # v13: --mc filter hata diya — recon mein 401/403/404 historical endpoints bhi
         # valuable hote hain (purane admin paths, deprecated API routes). Sab le aao.
+        # FIX: --subs add kiya — iske bina gau sirf apex domain ke URLs deta hai,
+        # subdomains (api., admin., dev.) ke historical endpoints chhoot jaate the.
         self.run_cmd(
-            f"gau {self._q(domain)} --threads 5 -o {self._q(hist_file)}",
+            f"gau {self._q(domain)} --subs --threads 5 -o {self._q(hist_file)}",
             "GAU"
         )
         if self.available.get("waybackurls"):
@@ -2049,10 +2070,11 @@ class DeepRecon:
         evidence  = f"{d_dir}/evidence"
         endpoints = f"{d_dir}/endpoints.txt"
 
-        # Nuclei templates update (once per session)
-        if not hasattr(self, "_nuclei_updated"):
-            self._update_nuclei_templates()
-            self._nuclei_updated = True
+        # Nuclei templates update (once per session, thread-safe)
+        with self._nuclei_lock:
+            if not self._nuclei_updated:
+                self._update_nuclei_templates()
+                self._nuclei_updated = True
 
         # Nuclei — SmartNuclei se smart command build karo
         _nuclei = SmartNuclei(rate_limit=NUCLEI_RATE_LIMIT, deep=False)
@@ -2158,7 +2180,7 @@ class DeepRecon:
             urls = [line.strip() for line in f if line.strip()][:200]
         for u in urls:
             try:
-                r = self._http.get(u, timeout=10, verify=False, allow_redirects=True)
+                r = self._http.get(u, timeout=10, allow_redirects=True)
                 if r is None or r.status_code >= 400:
                     continue
                 body = r.text[:1_000_000]
@@ -2307,8 +2329,9 @@ class DeepRecon:
             )
             if not self.file_has_content(js_urls):
                 # Last fallback: httpx pe grep karo JS links ke liye
+                # FIX: -match-regex deprecated → -mr (newer httpx), v12 fix yahan reh gaya tha
                 self.run_cmd(
-                    f"httpx -l {self._q(live_urls)} -silent -match-regex '\\.js([?#]|$)' "
+                    f"httpx -l {self._q(live_urls)} -silent -mr '\\.js([?#]|$)' "
                     f"-o {self._q(js_urls)} 2>/dev/null",
                     allow_exit_codes=(0, 1)
                 )
@@ -2429,7 +2452,13 @@ class DeepRecon:
 
         # 403 Bypass
         targets_403 = self._tmpfile(f"403_{domain}.txt")
-        self._extract_403_urls(f"{d_dir}/live.txt", targets_403)
+        # FIX: prefer reliable live_403.txt (status_code-derived). Agar wo na ho
+        # (purana run / probe phase skip) toh legacy substring extractor pe fallback.
+        live_403_file = f"{d_dir}/live_403.txt"
+        if self.file_has_content(live_403_file):
+            shutil.copy2(live_403_file, targets_403)
+        else:
+            self._extract_403_urls(f"{d_dir}/live.txt", targets_403)
         if self.file_has_content(targets_403):
             # Bypass403 class — full 19-header + path + verb bypass
             bc = Bypass403.run(
@@ -2477,7 +2506,7 @@ class DeepRecon:
             for url in s3_urls:
                 try:
                     r = self._http.get(url, timeout=5, allow_redirects=False)
-                    if r.status_code in (200, 403):  # 403 = exists but private
+                    if r is not None and r.status_code in (200, 403):  # 403 = exists but private
                         status = "OPEN" if r.status_code == 200 else "PRIVATE"
                         entry = f"S3[{status}]: {url}"
                         found_buckets.append(entry)
@@ -2490,7 +2519,7 @@ class DeepRecon:
             gcs_url = f"https://storage.googleapis.com/{bucket}"
             try:
                 r = self._http.get(gcs_url, timeout=5, allow_redirects=False)
-                if r.status_code in (200, 403):
+                if r is not None and r.status_code in (200, 403):
                     status = "OPEN" if r.status_code == 200 else "PRIVATE"
                     entry = f"GCS[{status}]: {gcs_url}"
                     found_buckets.append(entry)
@@ -2863,6 +2892,8 @@ class DeepRecon:
                                 timeout=8,
                                 allow_redirects=True,
                             )
+                            if r is None:
+                                continue
                             body = r.text[:5000]
                             fingerprint = TAKEOVER_FINGERPRINTS[matched_service]
                             if fingerprint.lower() in body.lower():
@@ -3488,8 +3519,12 @@ class DeepRecon:
                 except Exception as e:
                     print(f"{Fore.RED}[!] {t} failed: {e}")
 
-        # Cleanup temp dir
+        # Cleanup temp dir + HTTP session
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        try:
+            self._http.close()
+        except Exception:
+            pass
         print(f"\n{Fore.MAGENTA}[!!!] ALL DONE. Results: {self.base_dir}/{Style.RESET_ALL}")
 
 
