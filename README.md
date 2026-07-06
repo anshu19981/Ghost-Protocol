@@ -1,86 +1,73 @@
-markdown
-# 👻 Ghost Protocol v12.0 — Deep Recon Engine
+# Ghost Protocol v14.1 — Deep Recon Engine
 
-> **Bug Bounty Hunter Edition** — Single-file, production-ready recon automation for authorized penetration testing and bug bounty programs.
-
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Version](https://img.shields.io/badge/Version-12.0-red?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%2F%20macOS-lightgrey?style=flat-square)
-
----
-<img width="906" height="142" alt="2026-05-23_12-24" src="https://github.com/user-attachments/assets/3dd6fa48-1d9e-499c-82ac-2fd6c3583a49" />
-
-## ⚠️ Legal Disclaimer
-
-> This tool is intended **strictly for authorized security testing and bug bounty programs**.  
-> Running it against systems you do not have explicit written permission to test is **illegal**.  
-> The author is not responsible for any misuse or damage caused by this tool.  
-> **Always stay in scope. Always have authorization.**
-
----
-
-## 📖 What is Ghost Protocol?
-
-Ghost Protocol is a **full-pipeline recon automation engine** built for bug bounty hunters and penetration testers. It chains together 11 recon phases — from passive subdomain enumeration all the way to Wayback JS diffing and GitHub dorking — into a single, resumable, stealth-aware workflow.
-
-**Key design principles:**
-- **Single file** — drop on any VPS and run, no module hell
-- **Stealth-first** — adaptive rate limiting, UA rotation, proxy pool, per-domain backoff
-- **Resume-aware** — phase markers mean a crash or Ctrl+C picks up exactly where it left off
-- **Scope-safe** — wildcard + exclusion scope validation before any active scanning
-
----
-
-## 🗺️ Recon Pipeline
+> A comprehensive, multi-phase bug bounty reconnaissance automation tool built for professional hunters.
 
 ```
-Phase 1   →  Subdomain Enumeration     (crt.sh + subfinder + assetfinder + amass + brute)
-Phase 1b  →  Recursive Bruteforce      (top N subdomains drilled deeper)
-Phase 2   →  Port Scan + HTTP Probe    (naabu + httpx, per-port breakdown)
-Phase 3   →  Historical URLs           (gau + waybackurls)
-Phase 4   →  Scan + Crawl              (nuclei + katana + gowitness + paramspider)
-Phase 5   →  JS Secret Hunting         (subjs + regex + TruffleHog 700+ detectors)
-Phase 6   →  Data Mining               (gf patterns + CORS + 403 bypass)
-Phase 7   →  Cloud Asset Enum         (S3 / GCS / Azure bucket bruteforce)
-Phase 8   →  GitHub Dorking            (30+ dork queries + secret pattern matching)
-Phase 9   →  Subdomain Takeover        (CNAME + HTTP fingerprint, 28 services)
-Phase 10  →  ASN / IP Range Enum       (asnmap + naabu + httpx on IP ranges)
-Phase 11  →  Wayback JS Diffing        (deleted endpoints + old secrets in historical JS)
+Author  : Anshuman Jha
+Handle  : @anshu19981
+Certs   : OSCP+ | eJPT
+Platform: Bugcrowd | HackerOne
 ```
 
 ---
 
-## ✨ Features
+## Overview
 
-| Feature | Details |
-|---------|---------|
-| **StealthEngine** | UA rotation (24 real browser UAs), proxy pool with circuit breaker, adaptive per-domain backoff |
-| **SmartNuclei** | Fast mode (high-signal tags only) + Priority CVE mode (Log4Shell, Spring4Shell, etc.) |
-| **Bypass403** | 19 spoof headers + 14 path mutations + HTTP verb tampering |
-| **TruffleHog v3** | 700+ secret detectors with verification on live JS + Wayback snapshots |
-| **Priority Scanning** | `admin`, `api`, `dev`, `staging` subdomains always scanned first |
-| **Discord Alerts** | Real-time webhook notifications for high-value findings |
-| **HTML Report** | Auto-generated `report.html` + `summary.json` after each target |
-| **Dry Run Mode** | Print all commands without executing — review before you run |
-| **Per-phase Resume** | Crash or interrupt mid-scan, resume from the exact phase it stopped |
+Ghost Protocol is a single-file Python recon engine designed for bug bounty hunting and authorized penetration testing. It orchestrates 11 sequential reconnaissance phases — from passive subdomain enumeration to JavaScript diff monitoring — and consolidates all findings into a severity-sorted `findings.json` and a rich HTML report.
+
+Key design goals:
+
+- **No silent misses** — every phase uses fallback logic; a failed optional tool never kills the pipeline
+- **Stealth-first** — built-in rate limiting, UA rotation, proxy pool, and adaptive backoff on 429s
+- **Resume-safe** — per-phase markers allow interrupted scans to restart from where they left off
+- **Triage-ready output** — normalized `findings.json` with severity labels plugs directly into downstream tools or AI analysis
 
 ---
 
-## 🔧 Requirements
+## Features at a Glance
+
+| Phase | Name | What it does |
+|-------|------|-------------|
+| `enum` | Subdomain Enumeration | subfinder + assetfinder + amass + crt.sh + wayback |
+| `recursive` | Recursive Brute-force | alterx permutations → puredns/shuffledns/massdns |
+| `probe` | Port Scan & HTTP Probe | naabu port scan → httpx enrichment (IP, CNAME, favicon hash, tech) |
+| `history` | Historical URLs | gau + waybackurls — passive URL corpus |
+| `scan` | Vuln Scan & Crawl | nuclei (fast + CVE mode) + katana JS-aware crawl + param discovery |
+| `js` | JS Secret Hunting | katana JS URL extraction → trufflehog (verified) + regex patterns |
+| `mine` | Data Mining | gf pattern extraction (XSS/SQLi/SSRF/LFI/RCE/IDOR) + 403 bypass engine |
+| `cloud` | Cloud Asset Enum | S3/GCS/Azure bucket permutations (3× naming variants) |
+| `github` | GitHub Dorking | Paginated code search via GitHub API for secrets and internal endpoints |
+| `takeover` | Subdomain Takeover | subzy + nuclei takeover templates — 40+ fingerprints |
+| `asn` | ASN Enumeration | asnmap → naabu → httpx — full IP range coverage |
+| `jsdiff` | JS Diff Monitoring | Detects new endpoints and secrets added in redeployed JS bundles |
+
+---
+
+## Requirements
 
 ### Python
+
 ```
-Python 3.8+
+Python 3.9+
 ```
 
 ### Python Dependencies
+
 ```bash
-pip install colorama requests python-dotenv
+pip install -r requirements.txt
 ```
 
+```
+# requirements.txt
+requests
+colorama
+```
+
+> Ghost Protocol has no other Python dependencies. All heavy lifting is done by external Go/binary tools.
+
 ### Required Tools
-All of these must be in your `$PATH`:
+
+These tools **must** be installed and in `$PATH`. Ghost Protocol will exit at startup if any are missing.
 
 | Tool | Install |
 |------|---------|
@@ -94,420 +81,369 @@ All of these must be in your `$PATH`:
 | `naabu` | `go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest` |
 | `gau` | `go install github.com/lc/gau/v2/cmd/gau@latest` |
 
-### Optional Tools (greatly expand coverage)
+### Optional Tools
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| `amass` | Passive enum | `go install github.com/owasp-amass/amass/v4/...@master` |
-| `puredns` | DNS bruteforce (preferred) | `go install github.com/d3mondev/puredns/v2@latest` |
-| `shuffledns` | DNS bruteforce (fallback) | `go install github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest` |
-| `massdns` | DNS bruteforce (fallback) | [Build from source](https://github.com/blechschmidt/massdns) |
-| `alterx` | Permutation bruteforce | `go install github.com/projectdiscovery/alterx/cmd/alterx@latest` |
-| `waybackurls` | Historical URLs | `go install github.com/tomnomnom/waybackurls@latest` |
-| `subjs` | JS URL extraction | `go install github.com/lc/subjs@latest` |
-| `trufflehog` | Secret detection (700+ detectors) | `curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \| sh -s -- -b /usr/local/bin` |
-| `ffuf` | VHost bruteforce | `go install github.com/ffuf/ffuf/v2@latest` |
-| `gowitness` | Screenshots | `go install github.com/sensepost/gowitness@latest` |
-| `corsy` | CORS scanner | `pip install corsy` |
-| `subzy` | Takeover check | `go install github.com/PentestPad/subzy@latest` |
-| `asnmap` | ASN/IP range enum | `go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest` |
-| `paramspider` | Parameter discovery | `pip install paramspider` |
-| `cloud_enum` | Cloud asset enum | `pip install cloud-enum` |
-| `wappalyzergo` | Tech fingerprinting | `go install github.com/projectdiscovery/wappalyzergo/cmd/update-fingerprints@latest` |
+Missing optional tools are skipped gracefully — the phase continues without them.
 
-### Wordlists
+| Tool | Purpose |
+|------|---------|
+| `amass` | Additional passive subdomain sources |
+| `waybackurls` | Supplementary Wayback URL fetch |
+| `subjs` | Additional JS URL extraction |
+| `corsy` | CORS misconfiguration detection |
+| `subzy` | Subdomain takeover fingerprinting |
+| `puredns` / `shuffledns` / `massdns` | DNS brute-force resolution |
+| `alterx` | Subdomain permutation generation |
+| `ffuf` | Directory/parameter fuzzing |
+| `gowitness` | Screenshot capture for live hosts |
+| `paramspider` | Parameter discovery |
+| `wappalyzergo` | Technology fingerprinting |
+| `cloud_enum` | Extended cloud asset enumeration |
+| `asnmap` | ASN-to-IP-range mapping |
+| `trufflehog` | Verified secret detection in JS files |
+
+> **Brute-force note:** At least one of `puredns`, `shuffledns`, or `massdns` is needed for the `recursive` phase. If none are found, that phase is silently skipped.
+
+### GF Patterns
+
+The `mine` phase uses gf patterns. Install the community patterns:
+
 ```bash
-# Recommended — download SecLists
-sudo apt install seclists
-# OR
-git clone https://github.com/danielmiessler/SecLists ~/wordlists/SecLists
-```
-
-Ghost Protocol auto-detects wordlists from these paths (in order):
-```
-~/wordlists/subdomains-top1million-110000.txt
-/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt
-/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt
-/usr/share/wordlists/dnsmap.txt
-~/wordlists/dns_wordlist.txt
+mkdir -p ~/.gf
+git clone https://github.com/1ndianl33t/Gf-Patterns /tmp/gf-patterns
+cp /tmp/gf-patterns/*.json ~/.gf/
 ```
 
 ---
 
-## 🚀 Quick Start
+## Installation
 
-### 1. Clone and install
 ```bash
-git clone https://github.com/yourusername/ghost-protocol.git
+# Clone or copy the script
+git clone https://github.com/anshu19981/ghost-protocol
 cd ghost-protocol
-pip install colorama requests python-dotenv
-```
 
-### 2. Create your targets file
-```bash
-cat > targets.txt << EOF
-example.com
-another-target.com
-EOF
-```
+# Install Python dependencies
+pip install requests colorama
 
-### 3. (Optional) Configure via `.env`
-```bash
-cp .env.example .env
-nano .env
-```
-
-### 4. Run
-```bash
-python3 ghost_protocol_v12.py targets.txt
+# Install all required Go tools (see Requirements above)
+# Then verify:
+python3 ghost_protocol_v14.py --help
 ```
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-Create a `.env` file in your working directory (or at `~/.ghost_protocol/.env`):
+Ghost Protocol reads configuration from environment variables or a `.env` file in the working directory.
 
-```env
-# ── Discord Notifications ─────────────────────────────────────────
+### .env File
+
+Create a `.env` file alongside the script:
+
+```bash
+# Discord webhook for real-time alerts (optional)
 GP_DISCORD_WEBHOOK=https://discord.com/api/webhooks/YOUR/WEBHOOK
 
-# ── GitHub Dorking (Phase 8) ──────────────────────────────────────
-GP_GITHUB_TOKEN=ghp_yourPersonalAccessTokenHere
+# GitHub personal access token — enables GitHub dorking (phase 8)
+# Scope required: read:user, public_repo (read-only)
+GP_GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXX
 
-# ── Proxy Settings (choose one) ───────────────────────────────────
-# Single proxy
-GP_PROXY=http://127.0.0.1:8080
+# Proxy list file — one proxy per line (http://user:pass@host:port)
+GP_PROXY_FILE=/path/to/proxies.txt
 
-# Proxy list file (one proxy per line)
-GP_PROXY_FILE=~/proxies.txt
+# Rate limiting
+GP_BACKOFF_429=30.0        # Seconds to back off on HTTP 429
+GP_BASE_DELAY=0.3          # Base delay between requests (seconds)
 
-# BrightData rotating proxy
-GP_BRIGHTDATA_USER=your_user
-GP_BRIGHTDATA_PASS=your_password
-GP_BRIGHTDATA_HOST=brd.superproxy.io:22225
+# Scan tuning
+GP_MAX_403=100             # Max URLs to attempt 403 bypass on
+GP_MAX_JS=300              # Max JS files to scan for secrets
+GP_NUCLEI_FAST_ONLY=0      # 1 = skip CVE templates (faster scans)
 
-# ── Rate Limiting ─────────────────────────────────────────────────
-GP_BASE_DELAY=0.3          # Seconds between requests (default: 0.3)
-GP_BACKOFF_429=30.0        # Backoff on 429 Too Many Requests (default: 30)
-
-# ── Scan Tuning ───────────────────────────────────────────────────
-GP_MAX_403=100             # Max targets for 403 bypass (default: 100)
-GP_MAX_JS=300              # Max JS files to scan for secrets (default: 300)
-GP_NUCLEI_FAST_ONLY=0      # 1 = skip deep nuclei scan (default: 0)
-
-# ── Custom User-Agents ────────────────────────────────────────────
+# Custom User-Agent pool file
 GP_UA_FILE=~/.ghost_protocol/user_agents.txt
+
+# Favicon hashing (extra request per host — off by default)
+GP_FAVICON=1               # Enable favicon hashing
+```
+
+> All `.env` variables can also be exported as shell environment variables. Shell environment takes precedence over `.env`.
+
+---
+
+## Usage
+
+```
+python3 ghost_protocol_v14.py <targets.txt> [OPTIONS]
+```
+
+### Positional Argument
+
+```
+targets.txt     Path to a file containing one domain per line.
+                Example:
+                  example.com
+                  sub.example.com
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scope <file>` | — | Path to a scope file containing allowed domains/wildcards. Subdomains outside scope are filtered. |
+| `--output-dir <dir>` | Auto (timestamped) | Use a fixed output directory. Enables safe re-runs and resuming. |
+| `--phases <list>` | All phases | Comma-separated list of phases to run. See phase names below. |
+| `--passive` | Off | Passive-only mode — skips brute-force, port scanning, and active probing. OSINT recon only. |
+| `--dry-run` | Off | Print all commands that would run without executing them. Useful for auditing. |
+| `--force` | Off | Re-scan domains that already have a `.scan_complete` marker. |
+| `--skip-nuclei-update` | Off | Skip automatic nuclei template update on startup. |
+| `--rate-limit <N>` | 150 | Global requests/second cap applied to httpx, katana, and nuclei. Lower = stealthier. |
+| `--sweep-workers <N>` | 15 | Parallel worker threads for 403 bypass, cloud enum, and JS secret sweeps. |
+| `--favicon` | Off | Enable favicon hashing in httpx (mmh3 hash → asset clustering). Adds one extra request per host. |
+| `--katana-scope <mode>` | `rdn` | Katana crawl scope: `rdn` (root domain, follows sibling subdomains), `fqdn` (exact host only), `dn`. |
+| `--github-pages <N>` | 3 | Number of pages to fetch per GitHub dork query (100 results/page). |
+
+### Available Phase Names
+
+```
+enum        Subdomain enumeration (passive)
+recursive   Recursive DNS brute-force with permutations
+probe       Port scanning + HTTP probing + tech detection
+history     Historical URL collection (gau/wayback)
+scan        Nuclei vulnerability scan + Katana crawl
+js          JavaScript secret hunting (trufflehog + regex)
+mine        Data mining: gf patterns + 403 bypass engine
+cloud       Cloud storage asset enumeration (S3/GCS/Azure)
+github      GitHub code search dorking
+takeover    Subdomain takeover detection
+asn         ASN enumeration → IP range scanning
+jsdiff      JS diff monitoring for new endpoints/secrets
 ```
 
 ---
 
-## 📋 Usage
+## Examples
 
-### Basic scan
+### Basic full scan
+
 ```bash
-python3 ghost_protocol_v12.py targets.txt
+echo "example.com" > targets.txt
+python3 ghost_protocol_v14.py targets.txt
 ```
 
-### With scope file (recommended for bug bounty)
+### Multiple targets with scope enforcement
+
 ```bash
-python3 ghost_protocol_v12.py targets.txt --scope scope.txt
+python3 ghost_protocol_v14.py targets.txt --scope scope.txt
+```
+
+### Passive-only recon (no active scanning)
+
+```bash
+python3 ghost_protocol_v14.py targets.txt --passive
 ```
 
 ### Run specific phases only
-```bash
-# Passive recon only (no active scanning)
-python3 ghost_protocol_v12.py targets.txt --phases enum,history,cloud,github
 
-# Just re-run JS secrets and takeover after a previous full scan
-python3 ghost_protocol_v12.py targets.txt --phases js,takeover --output-dir DEEP_RECON_20240101_1200
+```bash
+# Only subdomain enum + probe
+python3 ghost_protocol_v14.py targets.txt --phases enum,probe
+
+# Only secret hunting phases
+python3 ghost_protocol_v14.py targets.txt --phases js,github,jsdiff
 ```
 
-### Passive mode (OSINT only — no bruteforce, no port scan)
+### Resume an interrupted scan
+
 ```bash
-python3 ghost_protocol_v12.py targets.txt --passive
+# Pass the same --output-dir from the previous run
+python3 ghost_protocol_v14.py targets.txt --output-dir DEEP_RECON_20240115_143022
 ```
 
-### Dry run (preview all commands before executing)
+### Stealth mode (slow, low-noise)
+
 ```bash
-python3 ghost_protocol_v12.py targets.txt --dry-run
+python3 ghost_protocol_v14.py targets.txt --rate-limit 30 --passive
 ```
 
-### Resume a previous scan
+### Dry run — preview commands without executing
+
 ```bash
-# Uses the same output dir — completed phases are skipped automatically
-python3 ghost_protocol_v12.py targets.txt --output-dir DEEP_RECON_20240101_1200
+python3 ghost_protocol_v14.py targets.txt --dry-run
 ```
 
-### Force rescan (ignore resume markers)
-```bash
-python3 ghost_protocol_v12.py targets.txt --output-dir DEEP_RECON_20240101_1200 --force
-```
+### Force rescan of already-completed targets
 
-### Skip nuclei template update (faster startup)
 ```bash
-python3 ghost_protocol_v12.py targets.txt --skip-nuclei-update
+python3 ghost_protocol_v14.py targets.txt --output-dir PREVIOUS_SESSION --force
 ```
 
 ---
 
-## 📁 Scope File Format
+## Output Structure
+
+Ghost Protocol creates one directory per target domain inside the session directory.
 
 ```
-# Wildcards — all subdomains of example.com
-*.example.com
-
-# Exact domain
-example.com
-
-# Explicit exclusion — never scan this
-!internal.example.com
-!staging.example.com
-```
-
----
-
-## 📂 Output Structure
-
-```
-DEEP_RECON_20240101_1200/
+DEEP_RECON_<SESSION_ID>/
+│
+├── SESSION_FINDINGS.json       ← All targets merged, severity-sorted
+├── index.html                  ← Multi-target dashboard
+│
 └── example.com/
-    ├── raw_subs.txt              # All discovered subdomains (pre-resolution)
-    ├── brute_subs.txt            # Bruteforced subdomains
-    ├── perm_subs.txt             # Permutation-based subdomains (alterx)
-    ├── recursive_subs.txt        # Recursive bruteforce results
-    ├── resolved_subs.txt         # DNS-resolved subdomains
-    ├── open_ports.txt            # host:port combos from naabu
-    ├── port_summary.txt          # Human-readable port breakdown
-    ├── live.txt                  # All live HTTP responses (httpx)
-    ├── live_200.txt              # 200 OK URLs only
-    ├── nonstandard_live.txt      # Live services on non-standard ports
-    ├── historical_urls.txt       # GAU + Wayback URLs
-    ├── all_endpoints.txt         # Merged crawled + historical endpoints
-    ├── js_urls.txt               # Discovered JS file URLs
-    ├── summary.json              # Machine-readable scan summary
-    ├── report.html               # HTML report (open in browser)
-    ├── recon.log                 # Full debug log
+    ├── findings.json           ← Normalized findings — PRIMARY TRIAGE FILE
+    ├── summary.json            ← Stat counts for all evidence files
+    ├── report.html             ← Cyberpunk HTML report with copy buttons
+    ├── recon.log               ← Full debug log for this domain
+    │
+    ├── raw_subs.txt            ← Raw passive subdomains
+    ├── brute_subs.txt          ← DNS brute-force results
+    ├── perm_subs.txt           ← Permutation-based subdomains
+    ├── recursive_subs.txt      ← Recursive brute subdomains
+    ├── resolved.txt            ← DNS-resolved subdomains
+    ├── live.txt                ← Live HTTP hosts (key probed fields)
+    ├── live_all.txt            ← Live hosts — all status codes
+    ├── live_200.txt            ← 200 OK hosts only
+    ├── nonstandard_live.txt    ← Hosts on non-standard ports
+    ├── open_ports.txt          ← host:port pairs from naabu
+    ├── all_endpoints.txt       ← All discovered URLs (crawl + history)
+    ├── favicon_clusters.txt    ← Hosts grouped by favicon hash (pivot signal)
+    ├── infra_map.txt           ← IP/CNAME infrastructure map
+    │
     └── evidence/
-        ├── vulns.txt             # Nuclei findings (critical/high/medium)
-        ├── vulns_cve.txt         # Priority CVE scan results
-        ├── js_secrets.txt        # Regex-detected secrets in JS
-        ├── trufflehog_js.txt     # TruffleHog findings (live JS)
-        ├── trufflehog_wayback_js.txt  # TruffleHog findings (historical JS)
-        ├── xss.txt               # XSS parameter candidates (gf)
-        ├── sqli.txt              # SQLi parameter candidates (gf)
-        ├── ssrf.txt              # SSRF parameter candidates (gf)
-        ├── lfi.txt               # LFI parameter candidates (gf)
-        ├── ssti.txt              # SSTI parameter candidates (gf)
-        ├── rce.txt               # RCE parameter candidates (gf)
-        ├── idor.txt              # IDOR parameter candidates (gf)
-        ├── open_redirect.txt     # Open redirect candidates (gf)
-        ├── cors.txt              # CORS misconfiguration findings
-        ├── 403_bypass.txt        # Successful 403 bypasses
-        ├── vhosts.txt            # Discovered virtual hosts
-        ├── takeover_candidates.txt  # Subdomain takeover candidates
-        ├── cloud_assets.txt      # S3/GCS/Azure buckets found
-        ├── github_leaks.txt      # GitHub dorking findings
-        ├── github_leaks.json     # GitHub findings (JSON)
-        ├── asn_ranges.txt        # IP ranges from ASN lookup
-        ├── asn_live_hosts.txt    # Live hosts in ASN ranges
-        ├── js_diff_endpoints.txt # Endpoints found in historical JS
-        ├── technologies.json     # Wappalyzer tech fingerprints
-        └── screenshots/          # Gowitness screenshots
+        ├── vulns.txt           ← Nuclei vulnerability hits
+        ├── vulns_cve.txt       ← Nuclei CVE hits
+        ├── xss.txt             ← XSS parameter candidates (gf)
+        ├── sqli.txt            ← SQLi parameter candidates (gf)
+        ├── ssrf.txt            ← SSRF parameter candidates (gf)
+        ├── ssti.txt            ← SSTI parameter candidates (gf)
+        ├── lfi.txt             ← LFI parameter candidates (gf)
+        ├── rce.txt             ← RCE parameter candidates (gf)
+        ├── idor.txt            ← IDOR parameter candidates (gf)
+        ├── open_redirect.txt   ← Open redirect candidates (gf)
+        ├── debug.txt           ← Debug/logic parameter candidates (gf)
+        ├── js_secrets.txt      ← Regex-detected secrets in JS ([high-signal] tagged)
+        ├── trufflehog_js.txt   ← Verified secrets from live JS (trufflehog)
+        ├── trufflehog_wayback_js.txt ← Verified secrets from Wayback JS
+        ├── 403_bypass.txt      ← Successful 403/401 bypass attempts
+        ├── cors.txt            ← CORS misconfiguration hits
+        ├── vhosts.txt          ← Virtual hosts discovered
+        ├── takeover_candidates.txt ← Subdomain takeover candidates
+        ├── cloud_assets.txt    ← Accessible cloud storage buckets
+        ├── github_leaks.txt    ← GitHub code search findings
+        ├── asn_ranges.txt      ← IP ranges from ASN lookup
+        ├── asn_open_ports.txt  ← Open ports from ASN IP scanning
+        ├── asn_live_hosts.txt  ← Live hosts from ASN IP ranges
+        └── js_diff_endpoints.txt ← New endpoints found via JS diff
+```
+
+### findings.json Schema
+
+The primary triage file. Every finding follows this structure:
+
+```json
+{
+  "target": "example.com",
+  "timestamp": "2024-01-15T14:30:22.123456",
+  "total_findings": 42,
+  "by_severity": {
+    "critical": 1,
+    "high": 5,
+    "medium": 12,
+    "low": 8,
+    "info": 16
+  },
+  "findings": [
+    {
+      "target": "example.com",
+      "type": "nuclei",
+      "severity": "critical",
+      "source": "vulns.txt",
+      "detail": "[CVE-2024-XXXX] [http] [critical] https://api.example.com/..."
+    }
+  ]
+}
+```
+
+**Finding types:** `nuclei`, `subdomain-takeover`, `secret-verified`, `secret-high-signal`, `secret-unverified`, `403-bypass`, `cors-misconfig`, `github-leak`, `cloud-asset`, `nonstd-service`, `favicon-cluster`
+
+**Severity levels:** `critical` → `high` → `medium` → `low` → `info`
+
+---
+
+## Architecture
+
+Ghost Protocol is a single-file build composed of four internal modules:
+
+### GhostConfig
+Loads all configuration from environment variables and `.env`. Provides proxy dict helpers and a safe dump method for logging (credentials masked).
+
+### StealthEngine
+Per-domain rate-limited HTTP client wrapping `requests`. Features:
+- User-Agent rotation from configurable pool
+- Rotating proxy pool with per-proxy health tracking
+- Adaptive backoff on HTTP 429 (respects `Retry-After` header)
+- Per-domain request delay with jitter
+
+### SmartNuclei
+Nuclei command builder that selects appropriate template sets and flags based on scan mode (fast vs. deep vs. CVE-only). Automatically updates templates on startup unless `--skip-nuclei-update` is set.
+
+### Bypass403
+A 19-technique 403/401 bypass engine running concurrently via `ThreadPoolExecutor`. Techniques include header injection (`X-Forwarded-For`, `X-Original-URL`, `X-Rewrite-URL`, etc.), path variants (`//`, `/%2f`, `/.`), and HTTP verb tampering.
+
+---
+
+## Discord Notifications
+
+Set `GP_DISCORD_WEBHOOK` in `.env` to receive real-time alerts. Ghost Protocol sends notifications at key phase milestones:
+
+- Nuclei critical/high findings
+- JavaScript secrets detected
+- Subdomain takeover candidates
+- Virtual hosts discovered
+- 403 bypasses found
+- Cloud assets accessible
+- GitHub leaks found
+- ASN live IP counts
+
+---
+
+## Triage Workflow
+
+After a scan completes, work the output in this order:
+
+```
+1. SESSION_FINDINGS.json        → Cross-target severity overview
+2. findings.json (per domain)   → Per-target normalized findings
+3. evidence/trufflehog_*.txt    → Verified secrets — report immediately
+4. evidence/takeover_candidates.txt → Claim and verify
+5. evidence/vulns.txt           → Nuclei confirmed vulnerabilities
+6. evidence/403_bypass.txt      → Manually verify each bypass
+7. evidence/cors.txt            → Check with auth cookies
+8. evidence/github_leaks.txt    → Validate keys before reporting
+9. evidence/js_secrets.txt      → [high-signal] entries first
+10. evidence/xss.txt / sqli.txt → Manual validation in Burp
 ```
 
 ---
 
-## 🔍 Available Phases
+## Responsible Use
 
-| Phase | Name | Description |
-|-------|------|-------------|
-| `enum` | Subdomain Enumeration | crt.sh, subfinder, assetfinder, amass, DNS brute, permutations |
-| `recursive` | Recursive Bruteforce | Drill down into top priority subdomains |
-| `probe` | Port Scan + HTTP Probe | naabu port scan + httpx probing all ports |
-| `history` | Historical URLs | GAU + Waybackurls |
-| `scan` | Scan + Crawl | Nuclei, Katana crawl, screenshots, param discovery |
-| `js` | JS Secret Hunting | subjs + regex + TruffleHog on live JS files |
-| `mine` | Data Mining | GF patterns, CORS check, 403 bypass |
-| `cloud` | Cloud Asset Enum | S3/GCS/Azure bucket detection |
-| `github` | GitHub Dorking | 30+ dork queries against public repos |
-| `takeover` | Subdomain Takeover | CNAME dangling check (28 services) |
-| `asn` | ASN Enum | IP range discovery + live host probe |
-| `jsdiff` | Wayback JS Diffing | Historical JS comparison, deleted endpoints |
+Ghost Protocol is intended exclusively for:
+
+- Authorized bug bounty programs (in-scope targets only)
+- Penetration testing engagements with written authorization
+- Security research in controlled/lab environments
+
+Unauthorized use against systems you do not have explicit permission to test is illegal. The author assumes no liability for misuse.
 
 ---
 
-## 🛡️ Stealth Features
+## License
 
-Ghost Protocol is built to avoid triggering WAFs and rate limiters:
-
-- **24 real browser User-Agents** — Chrome, Firefox, Safari, Edge, mobile — with matching `Accept`, `Sec-Fetch-*`, and `sec-ch-ua` headers per browser family
-- **Per-domain adaptive rate limiting** — each domain tracks its own request delay, backing off exponentially on 429 responses and recovering gradually on success
-- **Proxy pool with circuit breaker** — dead proxies are automatically dead-listed for 5 minutes after 3 consecutive failures
-- **Random jitter** — 0.1–1.2s jitter on every request to avoid pattern detection
-- **Priority subdomain scanning** — high-value targets (`admin`, `api`, `dev`) hit first before rate limits kick in
+For personal bug bounty and authorized security research use only.
 
 ---
 
-## 📡 Discord Notifications
-
-Set `GP_DISCORD_WEBHOOK` in your `.env` to get real-time alerts for:
-
-- 🔥 Nuclei critical/high findings
-- 🔑 JS secrets detected
-- 🚪 403 bypass successes
-- 🪣 Open S3/GCS/Azure buckets
-- 🏠 Virtual hosts discovered
-- ⚠️ Non-standard port live services
-- 💀 Subdomain takeover candidates
-
----
-
-## 🔑 403 Bypass Engine
-
-The `Bypass403` class tests 3 layers of bypass techniques per URL:
-
-**Layer 1 — Header-based (19 headers)**
-```
-X-Forwarded-For, X-Real-IP, X-Originating-IP, X-Remote-IP,
-X-Remote-Addr, X-Client-IP, X-Custom-IP-Authorization,
-X-Host, X-Forwarded-Host, X-Original-URL, X-Rewrite-URL,
-X-Override-URL, X-ProxyUser-Ip, X-HTTP-Method-Override,
-X-Forwarded-Proto, Referer (localhost trick), and more
-```
-
-**Layer 2 — Path manipulation (14 variants)**
-```
-double slash, dot-slash, trailing dot, semicolon (Tomcat),
-null byte, double URL encoding, Unicode overlong,
-path traversal wrapping, case switching, double path encoding
-```
-
-**Layer 3 — HTTP verb tampering**
-```
-HEAD, OPTIONS, TRACE, PUT, POST, PATCH
-```
-
----
-
-## 🧪 Nuclei Scan Modes
-
-**Fast mode (default)** — high-signal templates only:
-```
-cve, exposures, misconfiguration, takeover, default-login,
-exposed-panels, tokens, xss, sqli, ssrf, lfi, open-redirect,
-xxe, rce, fileupload, deserialization
-```
-
-**Priority CVE mode** — always runs alongside fast mode:
-```
-Log4Shell (CVE-2021-44228), Exchange SSRF (CVE-2021-26855),
-Spring4Shell (CVE-2022-22965), Confluence RCE (CVE-2022-26134),
-Ivanti RCE (CVE-2024-21887), ConnectWise CVSS-10 (CVE-2024-1709),
-and more
-```
-
----
-
-## 💡 Tips for Bug Bounty
-
-**Large programs (500+ subdomains):**
-```bash
-# Run passive first to map scope, then active phases separately
-python3 ghost_protocol_v12.py targets.txt --phases enum,recursive,history,cloud,github
-python3 ghost_protocol_v12.py targets.txt --phases probe,scan,js,mine --output-dir 
-```
-
-**Quick triage on a new target:**
-```bash
-python3 ghost_protocol_v12.py targets.txt --phases enum,probe,scan --skip-nuclei-update
-```
-
-**OSINT-only (no active footprint):**
-```bash
-python3 ghost_protocol_v12.py targets.txt --passive --phases enum,history,cloud,github
-```
-
-**Custom nuclei templates:**
-```bash
-mkdir -p ~/.ghost_protocol/templates
-# Drop your .yaml templates there — auto-loaded on every scan
-```
-
----
-
-## 📦 Installation Script
-
-```bash
-#!/bin/bash
-# Install all Go tools at once
-GO_TOOLS=(
-    "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-    "github.com/tomnomnom/assetfinder@latest"
-    "github.com/projectdiscovery/httpx/cmd/httpx@latest"
-    "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
-    "github.com/projectdiscovery/katana/cmd/katana@latest"
-    "github.com/tomnomnom/gf@latest"
-    "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
-    "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
-    "github.com/lc/gau/v2/cmd/gau@latest"
-    "github.com/d3mondev/puredns/v2@latest"
-    "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest"
-    "github.com/projectdiscovery/alterx/cmd/alterx@latest"
-    "github.com/tomnomnom/waybackurls@latest"
-    "github.com/lc/subjs@latest"
-    "github.com/ffuf/ffuf/v2@latest"
-    "github.com/sensepost/gowitness@latest"
-    "github.com/PentestPad/subzy@latest"
-    "github.com/projectdiscovery/asnmap/cmd/asnmap@latest"
-    "github.com/owasp-amass/amass/v4/...@master"
-)
-
-for tool in "${GO_TOOLS[@]}"; do
-    echo "[*] Installing $tool"
-    go install "$tool"
-done
-
-# Python tools
-pip install colorama requests python-dotenv paramspider corsy cloud-enum
-
-# TruffleHog
-curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
-
-echo "[✔] All tools installed"
-```
-
----
-
-## 🗂️ Changelog
-
-### v12.0 (Production-Ready Pass)
-- **CRITICAL FIX:** `dotenv` try/except was catching nothing — `GP_*` env vars silently ignored when `python-dotenv` not installed
-- **CRITICAL FIX:** `notify_discord()` break misaligned — retry loop never executed
-- **CRITICAL FIX:** `get_crt_sh()` duplicate unreachable `except` + missing `None` check causing `AttributeError` on timeout
-- **CRITICAL FIX:** `ProxyPool.mark_success()` missing lock — thread-safety bug under concurrent scans
-- **CRITICAL FIX:** Multiple `r.status_code` accesses without `None` guard across phases 5, 8, and `_detect_resolvers`
-- **SECURITY FIX:** 13 unquoted shell variables across naabu, katana, gau, gowitness, ffuf, corsy, wappalyzergo, nuclei output paths — shell injection risk
-- **BUG FIX:** Duplicate `"jenkins"` key in priority dict
-- **BUG FIX:** Dead `_run_403_bypass()` method removed (superseded by `Bypass403` class)
-- **CLEANUP:** Inline `import os/shutil` removed, 6× bare f-strings fixed, unused `deque` import removed
-
-### v11.0
-- Merged single-file build (gp_config + gp_stealth + gp_modules)
-- GhostConfig, StealthEngine, SmartNuclei, Bypass403 all inlined
-
-### v10.0
-- Graceful Ctrl+C handler, per-phase resume markers, scope validation
-- Nuclei auto-update, rate limit guard, duplicate-safe merges
-- S3/GCS cloud enum, paramspider, wappalyzer-go, HTML report
-
----
-
-## 🤝 Contributing
-
-Pull requests welcome. Please:
-1. Test against a target you own or have authorization for
-2. Don't add dependencies that require separate installation beyond the tools listed above
-3. Keep the single-file design intact
-
----
+*Ghost Protocol v14.1 — Built by Anshuman Jha*
